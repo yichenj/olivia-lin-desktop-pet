@@ -94,6 +94,42 @@ class PetInteractionTests(unittest.TestCase):
         self.assertEqual(widget.blink_until, 0.0)
         self.assertEqual(widget.bubble, initial_bubble)
 
+    def test_reading_pose_button_loads_transparent_static_art_and_idle_returns(self):
+        widget = self.make_pet()
+        self.assertIn("reading", widget.poses)
+        image = widget.poses["reading"].toImage()
+        self.assertGreater(image.width(), image.height() // 2)
+        self.assertEqual(image.pixelColor(0, 0).alpha(), 0)
+        rect = widget.pose_button_rects["reading"]
+        QtTest.QTest.mouseClick(widget, QtCore.Qt.LeftButton,
+                                pos=QtCore.QPoint(round(rect.center().x()), round(rect.center().y())))
+        self.assertEqual(widget.pose, "reading")
+        self.assertFalse(widget.grab().isNull())
+        rect = widget.button_rects["return"]
+        QtTest.QTest.mouseClick(widget, QtCore.Qt.LeftButton,
+                                pos=QtCore.QPoint(round(rect.center().x()), round(rect.center().y())))
+        self.assertEqual(widget.pose, "idle")
+
+    def test_each_pose_button_selects_its_static_pose(self):
+        widget = self.make_pet()
+        self.assertEqual(set(widget.pose_button_rects), {"standing", "reading", "piano", "daydream"})
+        for name, rect in widget.pose_button_rects.items():
+            QtTest.QTest.mouseClick(widget, QtCore.Qt.LeftButton,
+                                    pos=QtCore.QPoint(round(rect.center().x()), round(rect.center().y())))
+            self.assertEqual(widget.pose, name)
+            self.assertFalse(widget.grab().isNull())
+
+    def test_pose_shortcuts_switch_and_i_returns_to_idle(self):
+        widget = self.make_pet()
+        for key, name in ((QtCore.Qt.Key_S, "standing"), (QtCore.Qt.Key_R, "reading"),
+                          (QtCore.Qt.Key_P, "piano"), (QtCore.Qt.Key_D, "daydream")):
+            if name not in widget.poses:
+                continue
+            QtTest.QTest.keyClick(widget, key)
+            self.assertEqual(widget.pose, name)
+            QtTest.QTest.keyClick(widget, QtCore.Qt.Key_I)
+            self.assertEqual(widget.pose, "idle")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,14 +18,21 @@ Requirements on other Debian/Ubuntu Linux desktops: Blender 4.x (optional if the
 
 ## Interactions
 
-- Click Olivia or **打个招呼** for an offline scripted greeting and the existing smiling, raised-hand pose. The pose is a still illustration, not a frame-by-frame arm-wave animation.
-- Choose **眨眨眼** or press **B** for a brief, eye-only blink overlay. While awake and idle, Olivia also blinks occasionally.
+- The four new pose buttons switch to **站一站** (**S**), **读一会** (**R**), **弹琴** (**P**), and **发发呆** (**D**). Right-click also opens these pose choices. Press **I** or select **回 idle** to return to the existing idle loop; the selected pose otherwise stays until changed.
+- These four actions are **single static, transparent PNG illustrations**—not frame-by-frame body animations. The drawing surface gives them only a tiny one-pixel vertical UI float; there is no animated page turn, piano performance, or pose-transition sequence. The pose row labels them as static.
+- The original `olivia_idle.gif` remains the only multi-frame character loop (48 frames over four seconds). The generated blink cel is still shown briefly as a clipped eye overlay; the existing wave/smile portrait remains a still image with a subtle display-scale pulse, not an animated arm wave. Decorative music marks float independently as simple UI drawing.
+- Click Olivia or **打招呼** / press **Space** for an offline scripted greeting and the existing smiling, raised-hand still. Choose **眨眨眼** / press **B** for a brief blink overlay. While awake and idle, Olivia also blinks occasionally.
 - After about **55 seconds without input**, she may show a short offline idle-response bubble; automatic blink and idle responses pause while resting.
-- **听一音** plays a simple system beep as a piano-like cue; it is not a piano or MIDI player.
-- **小记事** opens a note field saved locally in `~/.local/share/olivia-desktop-pet/notes.txt`.
-- Drag the window to move it; right-click for move, rest/wake, hide, about, or quit. Escape hides; Space greets; double-click toggles rest mode.
+- **听一音** plays a simple system beep as a piano-like cue; it is not a piano or MIDI player. The **弹琴** pose is visual only. **小记事** opens a note field saved locally in `~/.local/share/olivia-desktop-pet/notes.txt`.
+- Drag the window to move it; right-click for poses, move, rest/wake, hide, about, or quit. Escape hides; double-click toggles rest mode.
 
 Conversation is limited to a handful of offline scripted lines. There is no account, network connection, AI chat service, official BSide functionality, or persistent autonomous behavior.
+
+## Action-pose preview
+
+The checkerboard contact sheet at [`preview-action-poses.png`](preview-action-poses.png) shows all four accepted transparent pose assets. [`preview-window-reading-final.png`](preview-window-reading-final.png) is an X11 capture of the live transparent desktop window in its reading pose; the browser page behind it is only the test desktop background, not app content or an official BSide screenshot. The same pose asset files live under `assets/poses/` and are described in [PROVENANCE.md](PROVENANCE.md).
+
+The face, bob, charcoal knit top, and silver pendant remain visually keyed to the existing references. The reading pose keeps the reference shorts; standing, piano, and daydream use modest black full-length trousers and flats as an alternate lower-body outfit.
 
 ## Portrait provenance and references
 

@@ -41,3 +41,18 @@ The distributable ZIP includes the generated portrait files and the provenance s
 - The English edit prompt requested the same transparent full-body seated portrait with only both eyelids closed, preserving identity, pose, clothing, lighting, and framing. The actual output also changed some pixels outside the eyes, so the app deliberately clips the new cel to two small eye regions and never displays it as a replacement portrait.
 - This is a single generated closed-eye cel shown briefly over the original idle illustration, not a multi-frame facial rig or a complex animation. The blink button is hidden if this optional asset is unavailable.
 - SHA-256 for `olivia_blink.png`: `54e22ddb500306514f83e188e46a94a195376cb48a5d9941e134a4e109156338`.
+
+## Added full-body action-pose sprites
+
+- Four transparent PNG pose illustrations were generated on 2026-09-29 with the built-in image generator, model `gpt-image-2.5`, medium quality. Each call supplied the existing generated `olivia_idle.png` and `olivia_smile.png` as visual references to maintain Olivia's face, bob, dark ribbed top, silver cross pendant, lighting, and 2.5D rendering style. The pose outputs are **reference-conditioned AI-generated fan art**, not official art or independently designed character assets.
+- The accepted poses are standalone image-generation outputs. No supplied reference was cropped into a pose, no face was manually composited, and no geometric body was drawn in code. The app renders the resulting PNGs on its transparent Qt surface.
+- The first standing, piano, and daydream requests using the reference shorts/bare-leg presentation were rejected by the image generator's safety system and produced no assets. Those prompts were not used as deliverables. They were regenerated with an opaque black full-length trouser outfit and closed shoes; the accepted reading pose retains the reference shorts. This changes the lower-body clothing in three sprites while keeping the face, hair, top, pendant, and overall render style consistent.
+- All four accepted images were visually checked for face/outfit continuity, full-body framing, limb/prop plausibility, native transparent edges over a checkerboard, and legibility at the desktop-pet display size. `preview-action-poses.png` is the checkerboard review contact sheet; `preview-window-reading-final.png` is a live-window X11 screenshot over the computer's browser test background.
+- Each PNG is **one static pose**, not an animation cel sequence. There is no generated book-page turn or piano-playing animation. The idle GIF and previously documented blink overlay remain separate and unchanged.
+
+| Pose | Project-relative path | SHA-256 |
+|---|---|---|
+| Standing (alternate black trousers) | `assets/poses/standing.png` | `0e4a330f5de0ba4685d7aa3076b1e651970bcae5f5e08e6331c04d82830cb7ad` |
+| Reading | `assets/poses/reading.png` | `81245cd02b7881747c30588048e9c661bf75e89556dd04e209fa193b561aa953` |
+| Piano (alternate black trousers) | `assets/poses/piano.png` | `d5a8cfd183bc139b91bf3ea78b75e1f36c16ef3098d782db08b858e43772699f` |
+| Daydream (alternate black trousers) | `assets/poses/daydream.png` | `ed73d195bbd67caa9d438f8ac795d17b603056e0761b74826f3a38f64353464` |
