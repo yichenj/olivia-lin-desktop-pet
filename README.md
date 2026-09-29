@@ -34,6 +34,8 @@ The checkerboard contact sheet at [`preview-action-poses.png`](preview-action-po
 
 All four poses now share the reference-aligned black denim everyday shorts and lightweight, low-profile charcoal canvas sneakers with slim pale soles. The styling is safe, non-sexual everyday wear. The short dark bob, charcoal knit top, silver pendant, faces, actions, and their book/piano props remain visually aligned with the existing references.
 
+**2026-09-29 revision status:** A requested change to penny loafers, shorter shorts, and more naturally slender legs was tested, but the generated candidates did not consistently meet the shorts/leg requirements across all four poses. No candidate was accepted. The four checked-in pose PNGs, contact sheet, and window previews therefore remain the previously accepted canvas-sneaker revision; they have not been refreshed to imply otherwise. See [PROVENANCE.md](PROVENANCE.md) for the review method and unchanged hashes.
+
 ## Portrait provenance and references
 
 Both portrait outputs—`olivia_idle.png` and `olivia_smile.png`—were created with the image generator (`gpt-image-2.5`) from text prompts plus two public image-search reference copies. They were **not direct crops or pasted screenshots**, but they were explicitly conditioned on the references and look unusually close to them. The accurate label is “reference-conditioned AI-generated fan art,” not “original portrait” or “official art.” The app does not display the unmodified reference files.

@@ -50,6 +50,12 @@ The distributable ZIP includes the generated portrait files and the provenance s
 - All four images were checked in a checkerboard overview for full-body framing, outfit continuity, hands, feet, shorts, shoe shape/details, props, and transparent edges at both asset and app-display scale. `preview-action-poses.png` is the updated contact sheet. `preview-window-standing-final.png` and the three matching pose previews are Qt-rendered app-window captures composited over a neutral test desktop background, not captures of a browser page or official BSide interface.
 - Each PNG is **one static pose**, not an animation cel sequence. There is no generated book-page turn or piano-playing animation. The idle GIF and previously documented blink overlay remain separate and unchanged.
 
+## 2026-09-29 lower-body revision review — not adopted
+
+- Two full-pose edit batches were tested with the built-in image-variation tool, `gpt-image-2.5`, medium quality. Each pose PNG was the composition base, with `references/search-3.webp` as the original outfit-style guide. A separate standing lower-body crop was also tested to isolate shorts and leg edits.
+- The generated candidates consistently changed the sneakers to recognizable loafers, but did not reliably shorten the shorts or slim the legs across all four poses. The crop experiment changed body/clothing details without preserving the desired proportions. The candidates failed the requested quality gate and were not promoted, copied into `assets/poses/`, or included in the contact sheet or window previews.
+- Consequently, no new accepted pose PNGs or new pose hashes exist. The four PNGs and preview files listed above remain the prior accepted revision; their existing SHA-256 values below were revalidated on 2026-09-29. Temporary review candidates are not part of the project deliverables.
+
 | Pose | Project-relative path | SHA-256 |
 |---|---|---|
 | Standing | `assets/poses/standing.png` | `5c7b0d37e971b1cbd953974af6031fe52284a98645c2af3171e3429ee3aa683d` |
