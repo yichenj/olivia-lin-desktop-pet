@@ -64,6 +64,7 @@ class OliviaPet(QtWidgets.QWidget):
 
         self.idle = QtGui.QPixmap(str(ROOT / "olivia_idle.png"))
         self.wave = QtGui.QPixmap(str(ROOT / "olivia_smile.png"))
+        self.blink_pose = QtGui.QPixmap(str(ROOT / "olivia_blink.png"))
         self.movie = None
         gif = ROOT / "olivia_idle.gif"
         if gif.exists():
@@ -76,6 +77,11 @@ class OliviaPet(QtWidgets.QWidget):
 
         self.mood = "idle"
         self.mood_until = 0.0
+        now = time.monotonic()
+        self.last_interaction = now
+        self.next_blink = now + random.uniform(9.0, 15.0)
+        self.next_idle_reaction = now + 55.0
+        self.blink_until = 0.0
         self.bubble = "嗨，今天想听点什么？"
         self.bubble_until = time.monotonic() + 9
         self.sleeping = False
@@ -100,6 +106,19 @@ class OliviaPet(QtWidgets.QWidget):
         self.last_clock = now
         if self.mood != "idle" and now > self.mood_until:
             self.mood = "idle"
+        if now >= self.blink_until:
+            self.blink_until = 0.0
+        if not self.sleeping and self.mood == "idle":
+            if not self.blink_pose.isNull() and not self.bubble_until and now >= self.next_blink:
+                self.blink_until = now + 0.18
+                self.next_blink = now + random.uniform(14.0, 24.0)
+            if now - self.last_interaction >= 55.0 and now >= self.next_idle_reaction:
+                self.say(random.choice([
+                    "安静的时候，也适合听一段旋律。",
+                    "我在这里陪你歇一会儿。",
+                    "要不要记下一首今天想到的歌？",
+                ]), 4.5)
+                self.next_idle_reaction = now + 55.0
         if self.bubble_until and now > self.bubble_until:
             self.bubble_until = 0
         self.update()
@@ -120,9 +139,10 @@ class OliviaPet(QtWidgets.QWidget):
         p.drawText(QtCore.QPointF(30, 295 + math.sin(self.phase * .8) * 3), "♪")
         p.drawText(QtCore.QPointF(397, 262 + math.sin(self.phase * .8 + 1) * 3), "♫")
 
-        # Main transparent illustration, with a real idle loop rendered in Blender when available.
+        # Main transparent illustration; blink only overlays the two eye regions.
+        blink_active = self.blink_until > time.monotonic() and self.mood == "idle" and not self.sleeping
         pix = self.idle
-        if self.movie is not None and self.movie.currentPixmap().isNull() is False:
+        if not blink_active and self.movie is not None and self.movie.currentPixmap().isNull() is False:
             pix = self.movie.currentPixmap()
         if self.mood == "wave" and not self.wave.isNull():
             pix = self.wave
@@ -132,7 +152,18 @@ class OliviaPet(QtWidgets.QWidget):
             target_h = 540 * scale
             x = (W - target_w) / 2
             y = -7 + bob - (target_h - 540) / 2
-            p.drawPixmap(QtCore.QRectF(x, y, target_w, target_h), pix, QtCore.QRectF(pix.rect()))
+            target = QtCore.QRectF(x, y, target_w, target_h)
+            p.drawPixmap(target, pix, QtCore.QRectF(pix.rect()))
+            if blink_active and not self.blink_pose.isNull():
+                # Soft oval clips hide the generated frame's unrelated pixel changes.
+                clip = QtGui.QPainterPath()
+                for nx, ny, nw, nh in ((0.397, 0.178, 0.078, 0.041), (0.505, 0.147, 0.078, 0.041)):
+                    clip.addEllipse(QtCore.QRectF(x + nx * target_w, y + ny * target_h,
+                                                  nw * target_w, nh * target_h))
+                p.save()
+                p.setClipPath(clip)
+                p.drawPixmap(target, self.blink_pose, QtCore.QRectF(self.blink_pose.rect()))
+                p.restore()
         else:
             p.setBrush(QtGui.QColor(245, 238, 231, 235))
             p.setPen(QtGui.QPen(QtGui.QColor(211, 194, 183), 1))
@@ -171,12 +202,18 @@ class OliviaPet(QtWidgets.QWidget):
         p.drawText(QtCore.QRectF(46, 520, 340, 21), QtCore.Qt.AlignVCenter, "钢琴 · 音乐与记忆 · 本地互动原型")
         p.setPen(QtGui.QColor("#9B7772"))
         f = p.font(); f.setPointSize(9); f.setWeight(QtGui.QFont.DemiBold); p.setFont(f)
-        p.drawText(QtCore.QRectF(46, 545, 340, 20), QtCore.Qt.AlignVCenter, "点一点人物、拖动窗口，或试试下面的按钮")
+        p.drawText(QtCore.QRectF(46, 545, 340, 20), QtCore.Qt.AlignVCenter, "点人物打招呼  ·  闲置片刻会主动回应")
 
-        labels = [("打个招呼", "hello"), ("听一音", "piano"), ("小记事", "notes")]
+        labels = [("打个招呼", "hello")]
+        if not self.blink_pose.isNull():
+            labels.append(("眨眨眼", "blink"))
+        labels.extend([("听一音", "piano"), ("小记事", "notes")])
         self.button_rects = {}
+        button_w = 82 if len(labels) == 4 else 109
+        gap = 7 if len(labels) == 4 else 10
+        left = (W - (len(labels) * button_w + (len(labels) - 1) * gap)) / 2
         for i, (label, key) in enumerate(labels):
-            rect = QtCore.QRectF(42 + i * 119, 577, 109, 52)
+            rect = QtCore.QRectF(left + i * (button_w + gap), 577, button_w, 52)
             self.button_rects[key] = rect
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor(65, 54, 55, 255) if key == "hello" else QtGui.QColor(239, 230, 221, 255))
@@ -187,7 +224,7 @@ class OliviaPet(QtWidgets.QWidget):
 
         p.setPen(QtGui.QColor(124, 110, 105, 210))
         f = p.font(); f.setPointSize(8); p.setFont(f)
-        p.drawText(QtCore.QRectF(55, 642, 320, 16), QtCore.Qt.AlignCenter, "右键可收起或退出  ·  拖动任意空白处移动")
+        p.drawText(QtCore.QRectF(55, 642, 320, 16), QtCore.Qt.AlignCenter, "空格打招呼  ·  B 眨眼  ·  右键更多")
         p.end()
 
     def say(self, text, duration=4.0, wave=False):
@@ -198,15 +235,32 @@ class OliviaPet(QtWidgets.QWidget):
             self.mood_until = time.monotonic() + 3.5
         self.update()
 
+    def note_interaction(self):
+        now = time.monotonic()
+        self.last_interaction = now
+        self.next_idle_reaction = now + 55.0
+        self.next_blink = now + random.uniform(8.0, 14.0)
+
     def hello(self):
+        self.note_interaction()
         self.say(random.choice(["你好呀，愿今天有一段好听的旋律。", "我刚好在想一首钢琴曲。", "要不要一起记住今天的声音？", "嗨，见到你真好。"]), wave=True)
 
+    def blink(self):
+        if self.blink_pose.isNull() or self.sleeping or self.mood != "idle":
+            return
+        self.note_interaction()
+        self.blink_until = time.monotonic() + 0.18
+        self.bubble_until = 0.0
+        self.update()
+
     def piano(self):
+        self.note_interaction()
         # An intentionally local click cue, not a piano/MIDI performance engine.
         QtWidgets.QApplication.beep()
         self.say(random.choice(["叮——像雨落在窗边。", "这一个音，送给你。", "听见了吗？像一个小小的开场。"]), 3.2)
 
     def notes(self):
+        self.note_interaction()
         self.notes_dialog = NotesDialog(self)
         self.notes_dialog.show()
         self.notes_dialog.raise_()
@@ -214,12 +268,15 @@ class OliviaPet(QtWidgets.QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.RightButton:
+            self.note_interaction()
             self.context_menu(event.globalPos()); return
         if event.button() == QtCore.Qt.LeftButton:
+            self.note_interaction()
             point = event.pos()
             for key, rect in self.button_rects.items():
                 if rect.contains(point):
-                    {"hello": self.hello, "piano": self.piano, "notes": self.notes}[key]()
+                    {"hello": self.hello, "blink": self.blink,
+                     "piano": self.piano, "notes": self.notes}[key]()
                     return
             if 110 < point.y() < 475:
                 self.hello(); return
@@ -236,6 +293,7 @@ class OliviaPet(QtWidgets.QWidget):
         event.accept()
 
     def mouseDoubleClickEvent(self, event):
+        self.note_interaction()
         self.sleeping = not self.sleeping
         self.say("休息一下……" if self.sleeping else "我回来啦。", 3)
 
@@ -269,6 +327,8 @@ class OliviaPet(QtWidgets.QWidget):
             self.hide()
         elif event.key() == QtCore.Qt.Key_Space:
             self.hello()
+        elif event.key() == QtCore.Qt.Key_B:
+            self.blink()
         else:
             super().keyPressEvent(event)
 

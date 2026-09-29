@@ -34,3 +34,10 @@ The portrait outputs are visibly intended to evoke Olivia and closely resemble p
 - `/workspace/olivia-desktop-pet/olivia_smile.png` — `cf619852fce2c6eb5d1786ae5ecd143dc6d3e7d8bea73d6ca7f78fb84956114d`
 
 The distributable ZIP includes the generated portrait files and the provenance statement, but **does not bundle the two image-search reference copies**; the source URLs are recorded above.
+
+## Added blink cel for gesture interactions
+
+- `olivia_blink.png` was generated on 2026-09-29 with the built-in image-variation generator using model `gpt-image-2.5` at medium quality. Its sole input/reference was the existing `olivia_idle.png`; no external image was supplied for this addition.
+- The English edit prompt requested the same transparent full-body seated portrait with only both eyelids closed, preserving identity, pose, clothing, lighting, and framing. The actual output also changed some pixels outside the eyes, so the app deliberately clips the new cel to two small eye regions and never displays it as a replacement portrait.
+- This is a single generated closed-eye cel shown briefly over the original idle illustration, not a multi-frame facial rig or a complex animation. The blink button is hidden if this optional asset is unavailable.
+- SHA-256 for `olivia_blink.png`: `54e22ddb500306514f83e188e46a94a195376cb48a5d9941e134a4e109156338`.

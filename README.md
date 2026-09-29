@@ -18,7 +18,9 @@ Requirements on other Debian/Ubuntu Linux desktops: Blender 4.x (optional if the
 
 ## Interactions
 
-- Click Olivia or **打个招呼** for an offline scripted greeting and a smiling/wave pose.
+- Click Olivia or **打个招呼** for an offline scripted greeting and the existing smiling, raised-hand pose. The pose is a still illustration, not a frame-by-frame arm-wave animation.
+- Choose **眨眨眼** or press **B** for a brief, eye-only blink overlay. While awake and idle, Olivia also blinks occasionally.
+- After about **55 seconds without input**, she may show a short offline idle-response bubble; automatic blink and idle responses pause while resting.
 - **听一音** plays a simple system beep as a piano-like cue; it is not a piano or MIDI player.
 - **小记事** opens a note field saved locally in `~/.local/share/olivia-desktop-pet/notes.txt`.
 - Drag the window to move it; right-click for move, rest/wake, hide, about, or quit. Escape hides; Space greets; double-click toggles rest mode.
@@ -28,6 +30,8 @@ Conversation is limited to a handful of offline scripted lines. There is no acco
 ## Portrait provenance and references
 
 Both portrait outputs—`olivia_idle.png` and `olivia_smile.png`—were created with the image generator (`gpt-image-2.5`) from text prompts plus two public image-search reference copies. They were **not direct crops or pasted screenshots**, but they were explicitly conditioned on the references and look unusually close to them. The accurate label is “reference-conditioned AI-generated fan art,” not “original portrait” or “official art.” The app does not display the unmodified reference files.
+
+The optional blink cel `olivia_blink.png` was generated on 2026-09-29 with `gpt-image-2.5` image variation using `olivia_idle.png` as its sole visual reference. The app uses only two small eye regions from this cel as a short overlay; it does not swap in the generated full portrait, because the generation changed details elsewhere in the image.
 
 Exact reference copies supplied to the image generator:
 
