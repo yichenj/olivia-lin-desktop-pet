@@ -30,9 +30,9 @@ Conversation is limited to a handful of offline scripted lines. There is no acco
 
 ## Action-pose preview
 
-The checkerboard contact sheet at [`preview-action-poses.png`](preview-action-poses.png) shows all four accepted transparent pose assets. [`preview-window-reading-final.png`](preview-window-reading-final.png) is an X11 capture of the live transparent desktop window in its reading pose; the browser page behind it is only the test desktop background, not app content or an official BSide screenshot. The same pose asset files live under `assets/poses/` and are described in [PROVENANCE.md](PROVENANCE.md).
+The checkerboard contact sheet at [`preview-action-poses.png`](preview-action-poses.png) shows all four updated transparent pose assets. [`preview-window-standing-final.png`](preview-window-standing-final.png) shows the standing pose in the app; the reading, piano, and daydream window previews are [`reading`](preview-window-reading-final.png), [`piano`](preview-window-piano-final.png), and [`daydream`](preview-window-daydream-final.png). These are Qt-rendered app-window previews composited over a neutral test desktop background, not official BSide screenshots. The pose assets live under `assets/poses/` and are described in [PROVENANCE.md](PROVENANCE.md).
 
-The face, bob, charcoal knit top, and silver pendant remain visually keyed to the existing references. The reading pose keeps the reference shorts; standing, piano, and daydream use modest black full-length trousers and flats as an alternate lower-body outfit.
+All four poses now share the reference-aligned black denim everyday shorts and lightweight, low-profile charcoal canvas sneakers with slim pale soles. The styling is safe, non-sexual everyday wear. The short dark bob, charcoal knit top, silver pendant, faces, actions, and their book/piano props remain visually aligned with the existing references.
 
 ## Portrait provenance and references
 
