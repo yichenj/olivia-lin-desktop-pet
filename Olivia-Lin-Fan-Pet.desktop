@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Olivia Lin — Fan Pet
+Comment=Unofficial local desktop pet prototype
+Exec=/workspace/olivia-desktop-pet/run.sh
+Path=/workspace/olivia-desktop-pet
+Terminal=false
+Categories=Utility;Game;
