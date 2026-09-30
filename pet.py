@@ -392,8 +392,6 @@ class OliviaPet(QtWidgets.QWidget):
             action.setChecked(not self.automatic and self.pose == name)
             action.triggered.connect(lambda checked=False, pose=name: self.set_pose(pose))
         menu.addSeparator()
-        menu.addAction("继续活动" if self.sleeping else "暂停活动", self.toggle_rest)
-        menu.addAction("小记事", self.notes)
         menu.addAction("移到屏幕角落", self.move_to_corner)
         menu.addSeparator()
         menu.addAction("收起窗口", self.hide_to_tray)

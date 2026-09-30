@@ -19,7 +19,6 @@ The launcher checks the project virtual environment instead of depending on Appl
 - **Escape** hides the pet to the menu bar. If no tray is available, it minimizes instead.
 - **⌘0** restores the hidden window even while another app is active. This global shortcut is reserved only while Olivia is hidden and released on restore/quit; if registration conflicts, Olivia minimizes to the Dock instead. **Olivia → 显示 Olivia** and the music-note menu also restore it; **⌘Q** quits when Olivia/Python is active. The Dock/application menu may be named **Python**, since this is a source launcher, not a standalone packaged app.
 - Drag an empty part of the information card to move the window. Right-click (or a trackpad secondary click) opens the pet menu.
-- Notes are stored in `~/Library/Application Support/Olivia Lin Fan Pet/notes.txt`. Existing Linux-style notes are not moved automatically.
 
 Native desktop launch and interactions were checked on macOS 14.8 / Apple Silicon with Python 3.13 and PyQt5 5.15.11. Intel Macs use the same launcher but have not been tested here. This is not a signed/notarized `.app` or a cross-Space/full-screen overlay; full-screen apps, Mission Control and multiple-display transitions are not covered by this validation. No Accessibility or Screen Recording permission is required by the pet itself.
 
@@ -36,11 +35,10 @@ To add an Applications-menu shortcut, run `./scripts/install_launcher.sh`. The r
 ## Everyday activity and input
 
 - Olivia starts in **自动活动**: she randomly switches between idle, standing, reading, piano and daydreaming without repeating the current pose. Activities last roughly 30–140 seconds depending on the pose; reading lasts longer than standing. There are no spontaneous greetings or system beeps.
-- Right-click to choose a pose and **keep it**. Select **自动活动** to resume the schedule. **暂停活动** pauses both automatic changes and blinking; **继续活动** resumes after a fresh delay. Manual selection never times out back to idle.
-- Automatic changes wait while you type a draft, drag the pet, use its context menu or have its notebook open. Hidden/minimized pets pause automatic activity. Ordinary letter keys and Space belong to the input field.
+- Right-click to choose a pose and **keep it**. Select **自动活动** to resume the schedule. Manual selection never times out back to idle.
+- Automatic changes wait while you type a draft, drag the pet or use its context menu. Hidden/minimized pets pause automatic activity. Ordinary letter keys and Space belong to the input field.
 - The main card contains an input field for future conversation/song requests. Enter or the arrow stores the latest submission **in memory for this session** and emits `message_submitted(str)` for a future backend. The UI explicitly says the service is not connected. It does not send network requests, play songs, or generate replies.
-- Drag the portrait or card to move the window. Right-click for poses, notebook, pause, move, hide and quit. Escape hides to the menu bar/tray, or minimizes if unavailable. Double-clicking no longer changes activity.
-- Notes remain local: `~/Library/Application Support/Olivia Lin Fan Pet/notes.txt` on macOS, `~/.local/share/olivia-desktop-pet/notes.txt` on Linux.
+- Drag the portrait or card to move the window. Right-click for automatic activity, fixed poses, move, hide and quit. Escape hides to the menu bar/tray, or minimizes if unavailable. Double-clicking no longer changes activity.
 
 All five poses are static transparent PNG illustrations, with a tiny vertical float. Idle blinks automatically every 9–17 seconds using only two clipped eye regions from `blink.png`. The base PNG and its size stay identical during a blink. This is not a rigged character, animated piano performance or page-turn sequence.
 

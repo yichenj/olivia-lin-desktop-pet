@@ -4,7 +4,7 @@ Double-click `Start.command`, or run `./scripts/setup_macos.sh` once followed by
 
 The pet is a native Qt Cocoa window with a transparent background, no title bar, and an always-on-top window hint. macOS uses a normal window rather than Qt's tool-window type, which can hide when another application activates. The menu-bar music note provides Show, Hide and Quit. The native Olivia menu provides Show (`⌘0`), and the application menu provides Quit (`⌘Q`). A Carbon hotkey reserves `⌘0` (including keypad zero) while the pet is hidden so restoration also works from another app; it is released on restore/quit. Registration failure keeps a minimized Dock window as a recovery route. No key logging or Accessibility permission is involved. Escape hides to the tray when available and otherwise minimizes. The Dock/menu name may be Python: this launcher is not a standalone `.app` bundle.
 
-Notes are local UTF-8 text at `~/Library/Application Support/Olivia Lin Fan Pet/notes.txt`. Linux retains `~/.local/share/olivia-desktop-pet/notes.txt`; previous files are not automatically moved or overwritten.
+The current context menu contains automatic activity, fixed poses, move, hide and quit. Pause and notebook entries have been removed. Notes saved by earlier versions remain at `~/Library/Application Support/Olivia Lin Fan Pet/notes.txt` on macOS or `~/.local/share/olivia-desktop-pet/notes.txt` on Linux; existing files are not moved or deleted.
 
 ## Initial macOS port validation (before the interaction fixes)
 
