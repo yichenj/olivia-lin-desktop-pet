@@ -1,0 +1,66 @@
+[
+  {
+    "pose": "standing",
+    "path": "assets/poses/standing.png",
+    "sha256": "9b56b9d9ce2b0a4688124f723c53d2b4d531ea013247e4903d7e31b5da3571f0",
+    "size": [
+      1024,
+      1536
+    ],
+    "mode": "RGBA",
+    "opaque_bounds": [
+      247,
+      23,
+      749,
+      1507
+    ]
+  },
+  {
+    "pose": "reading",
+    "path": "assets/poses/reading.png",
+    "sha256": "b6ade9f7df9034caa6ec7fe0802848a379f3a070ef79547539303ba1f6f542e6",
+    "size": [
+      1024,
+      1536
+    ],
+    "mode": "RGBA",
+    "opaque_bounds": [
+      288,
+      24,
+      831,
+      1514
+    ]
+  },
+  {
+    "pose": "piano",
+    "path": "assets/poses/piano.png",
+    "sha256": "4f4c2be2f480e837db6f38a14bc98833b218dfb2a4afc7045bef48c12ba6b87a",
+    "size": [
+      1024,
+      1536
+    ],
+    "mode": "RGBA",
+    "opaque_bounds": [
+      158,
+      24,
+      951,
+      1490
+    ]
+  },
+  {
+    "pose": "daydream",
+    "path": "assets/poses/daydream.png",
+    "sha256": "463c816d39f25c2b58b522cc92b8cb809cd4c744f1b712a2ddb15d0e17ef8002",
+    "size": [
+      1024,
+      1536
+    ],
+    "mode": "RGBA",
+    "opaque_bounds": [
+      292,
+      38,
+      841,
+      1503
+    ]
+  }
+]

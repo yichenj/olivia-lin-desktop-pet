@@ -62,3 +62,32 @@ The distributable ZIP includes the generated portrait files and the provenance s
 | Reading | `assets/poses/reading.png` | `4bc129294cdbe0391be4366c0e6767c67b83d8e040eb41fae1a96c93813cc6a8` |
 | Piano | `assets/poses/piano.png` | `e83030d0cde8def512929227c1e1de4d83972a421fe9e7bba4249d80f6c7a994` |
 | Daydream | `assets/poses/daydream.png` | `f1e2fa683c9bde45d69ef2612903a377ea86c570cb0572799d19fbb399784a60` |
+
+## 2026-09-30 lower-body revision — intermediate Prada footwear
+
+- Four individual edits were made with the built-in `image_gen` tool. The standing edit used its previous pose and `references/search-3.webp`; each seated pose used its previous sprite and the revised standing sprite to coordinate footwear. Exact prompts are in [prompts.md](output/pose-revision-2026-09-30/prompts.md).
+- The delivered sprites have polished black leather loafers with low heels and silver triangular hardware, shorter black denim hems with zip details, and moderately slimmer thigh/calf contours. Requested numerical reductions were generation guidance, not measured guarantees. Faces, upper garments, poses and main props were visually checked against the prior assets; generative edits are not pixel-identical outside the edited regions.
+- Shoe styling was informed by the [official Prada women’s brushed leather loafer](https://www.prada.com/us/en/p/brushed-leather-loafers/1D329N_055_F0002_F_DD25) description (leather band, metal triangle and 25mm heel). These are inspired fan-art shoes, not an exact product reproduction. The [official Steam store](https://store.steampowered.com/app/4532590/BSide_Olivia_Lin/) was region-blocked during this check; original shorts styling was therefore reviewed from the already-bundled reference copy, whose attribution limits are documented above.
+- Outputs were copied directly into `assets/poses/`, retaining their generated RGBA alpha. No code warping, composited faces, or manual body retouching was used. All four are 1024 × 1536, have transparent corners and fully contained subjects. Qt rendered the new contact sheet, before/after comparison and all four app-window previews. The original idle GIF, portrait, smile and blink files are unchanged.
+
+| Pose | Intermediate SHA-256 |
+|---|---|
+| standing | `98c8fff7ee180c3cfb511b94d13807941e56c0eb619e39457c4fcb64913addd7` |
+| reading | `0c1025cbe397f0bb28c89f5259490c81b286e04472e33bd57f4bdbdfc13dc05f` |
+| piano | `7223c4234ee5fae0ea5653cbeb29913a0b148f1205c66abddf983d34275a15d2` |
+| daydream | `e2e7cdfb1ed3c2d97f45bc17ad78ef3288210e1d67f62f058c18674e77855f78` |
+
+These hashes record the intermediate Prada-inspired revision. The final Dior-inspired assets are recorded below.
+
+## 2026-09-30 final footwear revision — adopted Dior Boy style
+
+- The user selected the right-hand Dior variant from the standing comparison. That exact PNG was installed as `assets/poses/standing.png`; reading, piano and daydream received separate built-in `image_gen` footwear edits using their intermediate sprites, the approved standing variant and the official Dior product photo. [Exact prompts and reference URLs](output/dior-shoe-study/README.md).
+- All four poses now share black Dior Boy-inspired platform loafers with rounded-square moccasin toes, gold nameplates and thick lug soles. These are approximate reference-conditioned fan-art interpretations, not official assets or exact product reproductions. Earlier shorts and leg edits were retained; no further body changes were requested. Generative edits can introduce small texture/detail differences elsewhere.
+- All four 1024 × 1536 RGBA files passed transparent-corner and subject-boundary checks. The standing file matches the approved sample byte-for-byte. Original idle, smile, blink and GIF files match Git HEAD byte-for-byte. Contact sheet, original-to-final comparison and all four Qt app-window previews were regenerated. Nine existing PyQt5 interaction tests passed with the offscreen platform on macOS; this is not a Linux/X11 desktop integration test. Current hashes are also in [validation.json](output/pose-revision-2026-09-30/validation.json).
+
+| Pose | Final SHA-256 |
+|---|---|
+| standing | `9b56b9d9ce2b0a4688124f723c53d2b4d531ea013247e4903d7e31b5da3571f0` |
+| reading | `b6ade9f7df9034caa6ec7fe0802848a379f3a070ef79547539303ba1f6f542e6` |
+| piano | `4f4c2be2f480e837db6f38a14bc98833b218dfb2a4afc7045bef48c12ba6b87a` |
+| daydream | `463c816d39f25c2b58b522cc92b8cb809cd4c744f1b712a2ddb15d0e17ef8002` |
