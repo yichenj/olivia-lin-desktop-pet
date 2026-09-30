@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Olivia Lin fan-made desktop pet prototype (Linux / X11, PyQt5)."""
+"""Olivia Lin fan-made desktop pet (macOS and Linux/X11, PyQt5)."""
 import math
 import os
 import random
@@ -17,6 +17,12 @@ CREAM = QtGui.QColor("#FBF7F1")
 ROSE = QtGui.QColor("#BD847F")
 
 
+def notes_directory():
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/Olivia Lin Fan Pet"
+    return Path.home() / ".local/share/olivia-desktop-pet"
+
+
 class NotesDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,7 +36,7 @@ class NotesDialog(QtWidgets.QDialog):
         self.text = QtWidgets.QPlainTextEdit()
         self.text.setPlaceholderText("Write down a song, a thought, or something you want to remember…")
         self.text.setStyleSheet("QPlainTextEdit{background:#fffaf5;border:1px solid #eadbd2;border-radius:10px;padding:10px;font-size:14px;color:#33282a}")
-        notes_dir = Path.home() / ".local/share/olivia-desktop-pet"
+        notes_dir = notes_directory()
         notes_dir.mkdir(parents=True, exist_ok=True)
         self.note_path = notes_dir / "notes.txt"
         if self.note_path.exists():
@@ -55,7 +61,10 @@ class NotesDialog(QtWidgets.QDialog):
 class OliviaPet(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        flags = QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.Tool
+        # A normal Cocoa window remains visible when another app gains focus and
+        # can be restored from the Dock if the menu-bar icon is unavailable.
+        kind = QtCore.Qt.Window if sys.platform == "darwin" else QtCore.Qt.Tool
+        flags = QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint | kind
         self.setWindowFlags(flags)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
@@ -94,6 +103,8 @@ class OliviaPet(QtWidgets.QWidget):
         self.sleeping = False
         self.drag_offset = None
         self.notes_dialog = None
+        self.tray = None
+        self.menu_bar = None
         self.last_clock = time.monotonic()
         self.phase = 0.0
         self.button_rects = {}
@@ -105,8 +116,63 @@ class OliviaPet(QtWidgets.QWidget):
         screen = QtWidgets.QApplication.primaryScreen()
         if screen:
             area = screen.availableGeometry()
-            self.move(area.right() - W - 34, area.bottom() - H - 20)
+            self.move(max(area.left(), area.right() - W - 34),
+                      max(area.top(), area.bottom() - H - 20))
         self.show()
+
+    def setup_desktop_controls(self):
+        """Install a persistent show/hide/quit menu; called only by the app entry point."""
+        app = QtWidgets.QApplication.instance()
+        self.quit_action = QtWidgets.QAction("退出 Olivia", self)
+        self.quit_action.setShortcut(QtGui.QKeySequence.Quit)
+        self.quit_action.setMenuRole(QtWidgets.QAction.QuitRole)
+        self.quit_action.triggered.connect(app.quit)
+        self.addAction(self.quit_action)
+        self.show_action = QtWidgets.QAction("显示 Olivia", self)
+        self.show_action.setShortcut(QtGui.QKeySequence("Ctrl+0"))
+        self.show_action.triggered.connect(self.restore_window)
+        if sys.platform == "darwin":
+            self.menu_bar = QtWidgets.QMenuBar()
+            menu = self.menu_bar.addMenu("Olivia")
+            menu.addAction(self.show_action)
+            menu.addAction(self.quit_action)
+        if QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
+            # A template icon remains readable in either macOS menu-bar theme.
+            pix = QtGui.QPixmap(44, 44)
+            pix.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(pix)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtCore.Qt.black)
+            painter.drawEllipse(QtCore.QRectF(7, 27, 17, 12))
+            painter.drawRect(QtCore.QRectF(20, 6, 4, 27))
+            painter.drawPolygon(QtGui.QPolygonF([
+                QtCore.QPointF(24, 6), QtCore.QPointF(36, 12),
+                QtCore.QPointF(36, 19), QtCore.QPointF(24, 13)]))
+            painter.end()
+            icon = QtGui.QIcon(pix)
+            icon.setIsMask(True)
+            self.tray = QtWidgets.QSystemTrayIcon(icon, self)
+            self.tray.setToolTip("Olivia Lin · 桌面宠物")
+            menu = QtWidgets.QMenu(self)
+            menu.addAction(self.show_action)
+            menu.addAction("收起 Olivia", self.hide_to_tray)
+            menu.addSeparator()
+            menu.addAction(self.quit_action)
+            self.tray.setContextMenu(menu)
+            self.tray.show()
+            app.aboutToQuit.connect(self.tray.hide)
+
+    def restore_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def hide_to_tray(self):
+        if self.tray is not None and self.tray.isVisible():
+            self.hide()
+        else:
+            self.showMinimized()
 
     def tick(self):
         now = time.monotonic()
@@ -197,10 +263,12 @@ class OliviaPet(QtWidgets.QWidget):
         # Small fan-made label
         p.setPen(QtCore.Qt.NoPen)
         p.setBrush(QtGui.QColor(255, 251, 246, 222))
-        p.drawRoundedRect(QtCore.QRectF(8, 15, 135, 28), 14, 14)
-        p.setPen(QtGui.QColor("#766360"))
         f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
-        p.drawText(QtCore.QRectF(8, 15, 135, 28), QtCore.Qt.AlignCenter, "AI FAN ART · REF-BASED")
+        label = "AI FAN ART · REF-BASED"
+        badge = QtCore.QRectF(8, 15, p.fontMetrics().horizontalAdvance(label) + 20, 28)
+        p.drawRoundedRect(badge, 14, 14)
+        p.setPen(QtGui.QColor("#766360"))
+        p.drawText(badge, QtCore.Qt.AlignCenter, label)
 
         # Speech card
         if self.bubble_until and self.pose == "idle":
@@ -397,13 +465,13 @@ class OliviaPet(QtWidgets.QWidget):
         elif chosen == about:
             QtWidgets.QMessageBox.about(self, "关于 Olivia Lin 桌面宠物", "<b>Olivia Lin · fan-made desktop pet</b><br><br>这是一个本地运行的非官方互动原型，不隶属于 BSide 或其权利人。人物立绘由图像生成器根据公开 BSide 图片搜索参考图生成，和参考脸部高度相似；应视为参考条件 AI 同人图，不能称为独立原创设计或官方美术。<br><br>互动、记事本与钢琴提示音均为本机演示功能；完整立绘来源记录见项目的 docs/PROVENANCE.md。")
         elif chosen == hide:
-            self.hide()
+            self.hide_to_tray()
         elif chosen == quit_action:
             QtWidgets.QApplication.quit()
 
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Escape:
-            self.hide()
+            self.hide_to_tray()
         elif event.key() == QtCore.Qt.Key_Space:
             self.hello()
         elif event.key() == QtCore.Qt.Key_B:
@@ -423,10 +491,13 @@ class OliviaPet(QtWidgets.QWidget):
 
 
 def main():
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling)
+    QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps)
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Olivia Lin Fan Pet")
     app.setQuitOnLastWindowClosed(True)
     pet = OliviaPet()
+    pet.setup_desktop_controls()
     return app.exec_()
 
 

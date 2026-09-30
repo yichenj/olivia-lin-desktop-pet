@@ -6,3 +6,4 @@ __pycache__/
 # Local previews, image-generation candidates and render intermediates.
 /output/
 /build/
+/.venv/

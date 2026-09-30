@@ -1,9 +1,10 @@
 import os
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +134,48 @@ class PetInteractionTests(unittest.TestCase):
             self.assertEqual(widget.pose, name)
             QtTest.QTest.keyClick(widget, QtCore.Qt.Key_I)
             self.assertEqual(widget.pose, "idle")
+
+    def test_escape_hides_to_tray_and_restore_preserves_pose(self):
+        widget = self.make_pet()
+        widget.tray = Mock()
+        widget.tray.isVisible.return_value = True
+        widget.set_pose("reading")
+        QtTest.QTest.keyClick(widget, QtCore.Qt.Key_Escape)
+        self.assertFalse(widget.isVisible())
+        widget.restore_window()
+        self.app.processEvents()
+        self.assertTrue(widget.isVisible())
+        self.assertFalse(widget.isMinimized())
+        self.assertEqual(widget.pose, "reading")
+
+    def test_hide_without_tray_minimizes_instead_of_losing_window(self):
+        widget = self.make_pet()
+        widget.hide_to_tray()
+        self.assertTrue(widget.isMinimized())
+        widget.restore_window()
+        self.assertFalse(widget.isMinimized())
+
+    def test_mac_uses_normal_floating_window(self):
+        with patch.object(pet.sys, "platform", "darwin"):
+            widget = self.make_pet()
+        self.assertEqual(widget.windowType(), QtCore.Qt.Window)
+        self.assertTrue(widget.windowFlags() & QtCore.Qt.WindowStaysOnTopHint)
+        self.assertTrue(widget.testAttribute(QtCore.Qt.WA_TranslucentBackground))
+
+    def test_notes_platform_paths_and_save_reload(self):
+        with patch.object(pet.sys, "platform", "darwin"):
+            self.assertEqual(pet.notes_directory(), Path.home() / "Library/Application Support/Olivia Lin Fan Pet")
+        with patch.object(pet.sys, "platform", "linux"):
+            self.assertEqual(pet.notes_directory(), Path.home() / ".local/share/olivia-desktop-pet")
+        with tempfile.TemporaryDirectory() as directory, patch.object(pet, "notes_directory", return_value=Path(directory)):
+            dialog = pet.NotesDialog()
+            dialog.text.setPlainText("Mac 本地记事测试 ♪")
+            with patch.object(QtWidgets.QMessageBox, "information"):
+                dialog.save_note()
+            restored = pet.NotesDialog()
+            self.assertEqual(restored.text.toPlainText(), "Mac 本地记事测试 ♪")
+            dialog.close()
+            restored.close()
 
 
 if __name__ == "__main__":
