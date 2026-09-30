@@ -2,9 +2,9 @@
 
 ## Current layout and generated files
 
-This document preserves the generation history below, including filenames used at the time. Current runtime files are `assets/portraits/{idle,smile,blink}.png`, `assets/animations/idle.gif` and `assets/poses/*.png`. Reference images live in `art/references/`; prompts and hashes live in `docs/art/`.
+This document preserves the generation history below, including filenames used at the time. Current runtime files are `assets/portraits/{idle,blink}.png` and `assets/poses/*.png`. The unused `smile.png` remains as historical artwork. The old `assets/animations/idle.gif` and its `scripts/render_idle.py` / `scripts/render_idle.sh` generators have been removed; they remain recoverable from Git history. References to them below describe earlier versions, not the current runtime. Reference images live in `art/references/`; prompts and hashes live in `docs/art/`.
 
-Old root-level preview screenshots are no longer versioned. Approved comparisons and duplicate try-on PNGs were deleted after their assets were adopted; other historical screenshots may remain locally in ignored `output/previews/archive/`. Fresh previews default to ignored `output/previews/`. Blender frames and the regenerable scene moved to ignored `build/idle/`. These removals affect the current tree, not earlier Git history. Runtime artwork bytes were unchanged by this directory cleanup.
+Old root-level preview screenshots are no longer versioned. Approved comparisons and duplicate try-on PNGs were deleted after their assets were adopted; other historical screenshots may remain locally in ignored `output/previews/archive/`. Fresh previews default to ignored `output/previews/`. Historical Blender frames and the scene moved to ignored `build/idle/`; these local intermediates are not used by the current app. These removals affect the current tree, not earlier Git history. Runtime artwork bytes were unchanged by this directory cleanup.
 
 ## Plain-language status
 

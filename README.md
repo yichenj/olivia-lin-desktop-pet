@@ -42,7 +42,7 @@ To add an Applications-menu shortcut, run `./scripts/install_launcher.sh`. The r
 
 All five poses are static transparent PNG illustrations, with a tiny vertical float. Idle blinks automatically every 9–17 seconds using only two clipped eye regions from `blink.png`. The base PNG and its size stay identical during a blink. This is not a rigged character, animated piano performance or page-turn sequence.
 
-The renderer draws only the selected portrait, clears transparent pixels every frame, disables native window shadows and keeps the opaque input card below the portrait. It no longer switches between GIF and PNG framing. `idle.gif` and `smile.png` are retained historical assets, **not loaded at runtime**. The optional `scripts/render_idle.sh` can still reproduce the old Blender loop into ignored `build/idle/`; the launcher never runs Blender or FFmpeg.
+The renderer draws only the selected portrait, clears transparent pixels every frame, disables native window shadows and keeps the opaque input card below the portrait. The old idle GIF and its Blender/FFmpeg generation scripts have been removed. All runtime character artwork uses PNG; `smile.png` remains a historical asset and is not loaded at runtime.
 
 ## Project layout
 
@@ -54,9 +54,8 @@ Start.command                  Finder double-click launcher
 requirements.txt               Pinned Python UI dependency
 assets/
   portraits/                   idle.png, smile.png, blink.png
-  animations/                  idle.gif (legacy render, not loaded)
   poses/                       standing, reading, piano, daydream PNGs
-scripts/                       Mac setup, rendering, previews, Linux installation
+scripts/                       Mac setup, previews, Linux installation
 packaging/linux/               Desktop launcher template
 art/references/                Source/reference images, never loaded by the app
 docs/
@@ -67,7 +66,7 @@ output/                        Local previews/candidates, ignored by Git
 build/                         Render intermediates, ignored by Git
 ```
 
-Approved character artwork lives in `assets/`; legacy idle GIF and smile art are retained for provenance. The four action poses wear the selected Dior Boy-inspired platform loafers with the earlier shorter shorts and slimmer leg contours. Idle, smile, blink and the idle GIF retain their original artwork. The current renderer selects one PNG by activity, plus the idle eye overlay when blinking.
+Approved character artwork lives in `assets/`; the legacy smile art is retained for provenance. The four action poses wear the selected Dior Boy-inspired platform loafers with the earlier shorter shorts and slimmer leg contours. Idle, smile and blink retain their original artwork. The current renderer selects one PNG by activity, plus the idle eye overlay when blinking.
 
 ## Generate local previews
 
@@ -79,7 +78,7 @@ python3 scripts/render_pose_previews.py --windows
 
 The contact sheet and Qt window captures are written to **`output/previews/`**, which is ignored by Git. An optional `--before-dir PATH` creates a comparison against four previous pose PNGs. `--output-dir` can select another local output folder; keep generated previews under `output/`. Confirmed previews and duplicate try-on candidates can be deleted once their approved assets have been installed. Older local screenshots, if retained, live in `output/previews/archive/`.
 
-The Blender scene and PNG frames under `build/idle/` are also ignored and can be regenerated. The legacy GIF stays versioned under `assets/animations/` but is not part of the current runtime.
+The retired GIF and its generation scripts remain recoverable from Git history. Any old render intermediates under `build/` remain ignored and are not used by the app.
 
 ## Validation
 
