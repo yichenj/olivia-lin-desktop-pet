@@ -112,6 +112,10 @@ class PetInteractionTests(unittest.TestCase):
 
     def test_each_pose_button_selects_its_static_pose(self):
         widget = self.make_pet()
+        self.assertEqual(set(widget.poses), {"standing", "reading", "piano", "daydream"})
+        self.assertFalse(widget.idle.isNull())
+        self.assertIsNotNone(widget.movie)
+        self.assertTrue(widget.movie.isValid())
         self.assertEqual(set(widget.pose_button_rects), {"standing", "reading", "piano", "daydream"})
         for name, rect in widget.pose_button_rects.items():
             QtTest.QTest.mouseClick(widget, QtCore.Qt.LeftButton,

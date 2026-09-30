@@ -10,6 +10,7 @@ from pathlib import Path
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 ROOT = Path(__file__).resolve().parent
+ASSETS = ROOT / "assets"
 W, H = 450, 760
 INK = QtGui.QColor("#2B2527")
 CREAM = QtGui.QColor("#FBF7F1")
@@ -62,17 +63,17 @@ class OliviaPet(QtWidgets.QWidget):
         self.resize(W, H)
         self.setWindowTitle("Olivia Lin — fan-made desktop pet")
 
-        self.idle = QtGui.QPixmap(str(ROOT / "olivia_idle.png"))
-        self.wave = QtGui.QPixmap(str(ROOT / "olivia_smile.png"))
-        self.blink_pose = QtGui.QPixmap(str(ROOT / "olivia_blink.png"))
+        self.idle = QtGui.QPixmap(str(ASSETS / "portraits" / "idle.png"))
+        self.wave = QtGui.QPixmap(str(ASSETS / "portraits" / "smile.png"))
+        self.blink_pose = QtGui.QPixmap(str(ASSETS / "portraits" / "blink.png"))
         self.poses = {
-            name: QtGui.QPixmap(str(ROOT / "assets" / "poses" / f"{name}.png"))
+            name: QtGui.QPixmap(str(ASSETS / "poses" / f"{name}.png"))
             for name in ("standing", "reading", "piano", "daydream")
         }
         self.poses = {name: pix for name, pix in self.poses.items() if not pix.isNull()}
         self.pose = "idle"
         self.movie = None
-        gif = ROOT / "olivia_idle.gif"
+        gif = ASSETS / "animations" / "idle.gif"
         if gif.exists():
             movie = QtGui.QMovie(str(gif))
             movie.setCacheMode(QtGui.QMovie.CacheAll)
@@ -394,7 +395,7 @@ class OliviaPet(QtWidgets.QWidget):
             self.sleeping = not self.sleeping
             self.say("休息一下……" if self.sleeping else "我回来啦。", 3)
         elif chosen == about:
-            QtWidgets.QMessageBox.about(self, "关于 Olivia Lin 桌面宠物", "<b>Olivia Lin · fan-made desktop pet</b><br><br>这是一个本地运行的非官方互动原型，不隶属于 BSide 或其权利人。人物立绘由图像生成器根据公开 BSide 图片搜索参考图生成，和参考脸部高度相似；应视为参考条件 AI 同人图，不能称为独立原创设计或官方美术。<br><br>互动、记事本与钢琴提示音均为本机演示功能；完整立绘来源记录见项目的 PROVENANCE.md。")
+            QtWidgets.QMessageBox.about(self, "关于 Olivia Lin 桌面宠物", "<b>Olivia Lin · fan-made desktop pet</b><br><br>这是一个本地运行的非官方互动原型，不隶属于 BSide 或其权利人。人物立绘由图像生成器根据公开 BSide 图片搜索参考图生成，和参考脸部高度相似；应视为参考条件 AI 同人图，不能称为独立原创设计或官方美术。<br><br>互动、记事本与钢琴提示音均为本机演示功能；完整立绘来源记录见项目的 docs/PROVENANCE.md。")
         elif chosen == hide:
             self.hide()
         elif chosen == quit_action:
