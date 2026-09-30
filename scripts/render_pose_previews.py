@@ -69,8 +69,7 @@ def main():
         widget.phase = 0
         widget.poses = {name: QtGui.QPixmap(str(args.source / f"{name}.png")) for name in POSES}
         for name in POSES:
-            widget.pose = name
-            widget.update()
+            widget.set_pose(name)
             app.processEvents()
             image = QtGui.QImage(pet.W, pet.H, QtGui.QImage.Format_ARGB32)
             image.fill(QtGui.QColor("#e3e5e8"))

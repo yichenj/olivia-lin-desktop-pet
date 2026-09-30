@@ -17,7 +17,7 @@ The launcher checks the project virtual environment instead of depending on Appl
 
 - Click the menu-bar **music-note icon** to show, hide or quit Olivia.
 - **Escape** hides the pet to the menu bar. If no tray is available, it minimizes instead.
-- With Olivia/Python active, **⌘0** or **Olivia → 显示 Olivia** restores the window; **⌘Q** quits. The Dock/application menu may be named **Python**, since this is a source launcher, not a standalone packaged app.
+- **⌘0** restores the hidden window even while another app is active. This global shortcut is reserved only while Olivia is hidden and released on restore/quit; if registration conflicts, Olivia minimizes to the Dock instead. **Olivia → 显示 Olivia** and the music-note menu also restore it; **⌘Q** quits when Olivia/Python is active. The Dock/application menu may be named **Python**, since this is a source launcher, not a standalone packaged app.
 - Drag an empty part of the information card to move the window. Right-click (or a trackpad secondary click) opens the pet menu.
 - Notes are stored in `~/Library/Application Support/Olivia Lin Fan Pet/notes.txt`. Existing Linux-style notes are not moved automatically.
 
@@ -33,34 +33,30 @@ Install Python 3 and PyQt5 (for example `sudo apt install python3-pyqt5` on Debi
 
 To add an Applications-menu shortcut, run `./scripts/install_launcher.sh`. The runtime uses a system-tray menu where supported. Linux/X11 needs a desktop compositor for transparent overlays; macOS uses Qt's native Cocoa backend.
 
-## Idle animation
+## Everyday activity and input
 
-The included `assets/animations/idle.gif` is a four-second, 48-frame transparent idle loop rendered from `assets/portraits/idle.png`. It moves a camera-facing image plane; it is **not** a fully modeled or rigged 3D character. Normal use does not require Blender or FFmpeg. `./scripts/render_idle.sh` regenerates the GIF and puts disposable frame images and the Blender scene in ignored `build/idle/` (the script targets Blender 4.0's Eevee API).
+- Olivia starts in **自动活动**: she randomly switches between idle, standing, reading, piano and daydreaming without repeating the current pose. Activities last roughly 30–140 seconds depending on the pose; reading lasts longer than standing. There are no spontaneous greetings or system beeps.
+- Right-click to choose a pose and **keep it**. Select **自动活动** to resume the schedule. **暂停活动** pauses both automatic changes and blinking; **继续活动** resumes after a fresh delay. Manual selection never times out back to idle.
+- Automatic changes wait while you type a draft, drag the pet, use its context menu or have its notebook open. Hidden/minimized pets pause automatic activity. Ordinary letter keys and Space belong to the input field.
+- The main card contains an input field for future conversation/song requests. Enter or the arrow stores the latest submission **in memory for this session** and emits `message_submitted(str)` for a future backend. The UI explicitly says the service is not connected. It does not send network requests, play songs, or generate replies.
+- Drag the portrait or card to move the window. Right-click for poses, notebook, pause, move, hide and quit. Escape hides to the menu bar/tray, or minimizes if unavailable. Double-clicking no longer changes activity.
+- Notes remain local: `~/Library/Application Support/Olivia Lin Fan Pet/notes.txt` on macOS, `~/.local/share/olivia-desktop-pet/notes.txt` on Linux.
 
-If the GIF is missing and both Blender and FFmpeg are available, `./run.sh` attempts to render it on first launch. Otherwise the pet falls back to the static idle PNG. `OLIVIA_SKIP_RENDER=1 ./run.sh` skips this generation step; an existing GIF still plays.
+All five poses are static transparent PNG illustrations, with a tiny vertical float. Idle blinks automatically every 9–17 seconds using only two clipped eye regions from `blink.png`. The base PNG and its size stay identical during a blink. This is not a rigged character, animated piano performance or page-turn sequence.
 
-## Interactions
-
-- The four new pose buttons switch to **站一站** (**S**), **读一会** (**R**), **弹琴** (**P**), and **发发呆** (**D**). Right-click also opens these pose choices. Press **I** or select **回 idle** to return to the existing idle loop; the selected pose otherwise stays until changed.
-- These four actions are **single static, transparent PNG illustrations**—not frame-by-frame body animations. The drawing surface gives them only a tiny one-pixel vertical UI float; there is no animated page turn, piano performance, or pose-transition sequence. The pose row labels them as static.
-- The original `assets/animations/idle.gif` remains the only multi-frame character loop (48 frames over four seconds). The generated blink cel is still shown briefly as a clipped eye overlay; the existing wave/smile portrait remains a still image with a subtle display-scale pulse, not an animated arm wave. Decorative music marks float independently as simple UI drawing.
-- Click Olivia or **打招呼** / press **Space** for an offline scripted greeting and the existing smiling, raised-hand still. Choose **眨眨眼** / press **B** for a brief blink overlay. While awake and idle, Olivia also blinks occasionally.
-- After about **55 seconds without input**, she may show a short offline idle-response bubble; automatic blink and idle responses pause while resting.
-- **听一音** plays a simple system beep as a piano-like cue; it is not a piano or MIDI player. The **弹琴** pose is visual only. **小记事** opens a note field saved locally in the platform-specific notes folder (on Linux: `~/.local/share/olivia-desktop-pet/notes.txt`).
-- Drag the window to move it; right-click for poses, move, rest/wake, hide, about, or quit. Escape hides to the menu bar/tray (or minimizes if unavailable); double-click toggles rest mode.
-
-Conversation is limited to a handful of offline scripted lines. There is no account, network connection, AI chat service, official BSide functionality, or persistent autonomous behavior.
+The renderer draws only the selected portrait, clears transparent pixels every frame, disables native window shadows and keeps the opaque input card below the portrait. It no longer switches between GIF and PNG framing. `idle.gif` and `smile.png` are retained historical assets, **not loaded at runtime**. The optional `scripts/render_idle.sh` can still reproduce the old Blender loop into ignored `build/idle/`; the launcher never runs Blender or FFmpeg.
 
 ## Project layout
 
 ```text
-pet.py                         Application and interaction logic
+pet.py                         Application, activity scheduler and input UI
+mac_hotkey.py                  macOS hidden-window restore shortcut
 run.sh                         Shared macOS/Linux launch entry point
 Start.command                  Finder double-click launcher
 requirements.txt               Pinned Python UI dependency
 assets/
   portraits/                   idle.png, smile.png, blink.png
-  animations/                  idle.gif (shipped runtime animation)
+  animations/                  idle.gif (legacy render, not loaded)
   poses/                       standing, reading, piano, daydream PNGs
 scripts/                       Mac setup, rendering, previews, Linux installation
 packaging/linux/               Desktop launcher template
@@ -73,7 +69,7 @@ output/                        Local previews/candidates, ignored by Git
 build/                         Render intermediates, ignored by Git
 ```
 
-Only approved runtime artwork belongs in `assets/`. The four action poses wear the selected Dior Boy-inspired platform loafers with the earlier shorter shorts and slimmer leg contours. Idle, smile, blink and the idle GIF retain their original artwork. Loading a different folder does not change an image's behavior; `pet.py` selects static portraits, the GIF or the blink overlay by state.
+Approved character artwork lives in `assets/`; legacy idle GIF and smile art are retained for provenance. The four action poses wear the selected Dior Boy-inspired platform loafers with the earlier shorter shorts and slimmer leg contours. Idle, smile, blink and the idle GIF retain their original artwork. The current renderer selects one PNG by activity, plus the idle eye overlay when blinking.
 
 ## Generate local previews
 
@@ -85,7 +81,7 @@ python3 scripts/render_pose_previews.py --windows
 
 The contact sheet and Qt window captures are written to **`output/previews/`**, which is ignored by Git. An optional `--before-dir PATH` creates a comparison against four previous pose PNGs. `--output-dir` can select another local output folder; keep generated previews under `output/`. Confirmed previews and duplicate try-on candidates can be deleted once their approved assets have been installed. Older local screenshots, if retained, live in `output/previews/archive/`.
 
-The Blender scene and PNG frames under `build/idle/` are also ignored and can be regenerated. The final GIF stays versioned under `assets/animations/` so running the pet does not normally require Blender or FFmpeg.
+The Blender scene and PNG frames under `build/idle/` are also ignored and can be regenerated. The legacy GIF stays versioned under `assets/animations/` but is not part of the current runtime.
 
 ## Validation
 
@@ -93,7 +89,7 @@ The Blender scene and PNG frames under `build/idle/` are also ignored and can be
 QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -v
 ```
 
-These tests check loading, interactions, notes and launcher interpreter/path selection. On macOS, use `.venv/bin/python` in place of `python3`. Use `QT_QPA_PLATFORM=cocoa .venv/bin/python -m unittest discover -s tests -v` on a Mac desktop to run the same suite against native Qt windows. The offscreen suite alone does not validate desktop integration. See [macOS validation](docs/MACOS.md) for the native checks and remaining limits.
+These tests check activity scheduling, manual pose persistence, text entry, pixel-level blink/pose regressions, notes and launcher interpreter/path selection. Native-only tests also exercise Carbon hotkey registration, conflict cleanup and event dispatch. On macOS, use `.venv/bin/python` in place of `python3`. Use `QT_QPA_PLATFORM=cocoa .venv/bin/python -m unittest discover -s tests -v` on a Mac desktop to run the same suite against native Qt windows. The offscreen suite alone does not validate desktop integration. See [macOS validation](docs/MACOS.md) for the native checks and remaining limits.
 
 ## Portrait provenance and references
 

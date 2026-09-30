@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Olivia Lin fan-made desktop pet (macOS and Linux/X11, PyQt5)."""
 import math
-import os
 import random
 import sys
 import time
@@ -11,10 +10,9 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
-W, H = 450, 760
+W, H = 450, 620
 INK = QtGui.QColor("#2B2527")
 CREAM = QtGui.QColor("#FBF7F1")
-ROSE = QtGui.QColor("#BD847F")
 
 
 def notes_directory():
@@ -59,66 +57,92 @@ class NotesDialog(QtWidgets.QDialog):
 
 
 class OliviaPet(QtWidgets.QWidget):
+    message_submitted = QtCore.pyqtSignal(str)
+    POSE_NAMES = {"idle": "待机", "standing": "站一站", "reading": "读一会",
+                  "piano": "弹琴", "daydream": "发发呆"}
+    DWELL_SECONDS = {"idle": (30, 55), "standing": (35, 65), "reading": (80, 140),
+                     "piano": (65, 110), "daydream": (45, 85)}
+    EYES = ((.397, .178, .078, .041), (.505, .147, .078, .041))
+
     def __init__(self):
         super().__init__()
-        # A normal Cocoa window remains visible when another app gains focus and
-        # can be restored from the Dock if the menu-bar icon is unavailable.
         kind = QtCore.Qt.Window if sys.platform == "darwin" else QtCore.Qt.Tool
-        flags = QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint | kind
-        self.setWindowFlags(flags)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
-        self.setMouseTracking(True)
-        self.resize(W, H)
+        # Cocoa can cache an alpha-shaped shadow of the first portrait. Disable
+        # that system shadow: the transparent character is the entire surface.
+        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint
+                            | QtCore.Qt.NoDropShadowWindowHint | kind)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        self.setFixedSize(W, H)
         self.setWindowTitle("Olivia Lin — fan-made desktop pet")
-
-        self.idle = QtGui.QPixmap(str(ASSETS / "portraits" / "idle.png"))
-        self.wave = QtGui.QPixmap(str(ASSETS / "portraits" / "smile.png"))
-        self.blink_pose = QtGui.QPixmap(str(ASSETS / "portraits" / "blink.png"))
-        self.poses = {
-            name: QtGui.QPixmap(str(ASSETS / "poses" / f"{name}.png"))
-            for name in ("standing", "reading", "piano", "daydream")
-        }
+        self.idle = QtGui.QPixmap(str(ASSETS / "portraits/idle.png"))
+        self.blink_pose = QtGui.QPixmap(str(ASSETS / "portraits/blink.png"))
+        self.poses = {name: QtGui.QPixmap(str(ASSETS / "poses" / f"{name}.png"))
+                      for name in self.POSE_NAMES if name != "idle"}
         self.poses = {name: pix for name, pix in self.poses.items() if not pix.isNull()}
+        # Always use the same PNG and transform for the base, including blinks.
+        # The old GIF contains a differently framed portrait and is not loaded.
         self.pose = "idle"
-        self.movie = None
-        gif = ASSETS / "animations" / "idle.gif"
-        if gif.exists():
-            movie = QtGui.QMovie(str(gif))
-            movie.setCacheMode(QtGui.QMovie.CacheAll)
-            movie.setSpeed(100)
-            if movie.isValid():
-                self.movie = movie
-                self.movie.start()
-
-        self.mood = "idle"
-        self.mood_until = 0.0
-        now = time.monotonic()
-        self.last_interaction = now
-        self.next_blink = now + random.uniform(9.0, 15.0)
-        self.next_idle_reaction = now + 55.0
-        self.blink_until = 0.0
-        self.bubble = "嗨，今天想听点什么？"
-        self.bubble_until = time.monotonic() + 9
+        self.automatic = True
         self.sleeping = False
         self.drag_offset = None
         self.notes_dialog = None
         self.tray = None
         self.menu_bar = None
-        self.last_clock = time.monotonic()
+        self.restore_hotkey = None
+        self.menu_open = False
         self.phase = 0.0
-        self.button_rects = {}
-        self.pose_button_rects = {}
+        now = time.monotonic()
+        self.last_clock = self.last_interaction = now
+        self.next_activity = now + random.uniform(*self.DWELL_SECONDS[self.pose])
+        self.next_blink = now + random.uniform(9, 15)
+        self.blink_until = 0.0
+        self.last_message = ""
+        self.setup_input()
+        self.context_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Shift+F10"), self)
+        self.context_shortcut.activated.connect(
+            lambda: self.open_context_menu(self.mapToGlobal(QtCore.QPoint(210, 470))))
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(33)
-
-        screen = QtWidgets.QApplication.primaryScreen()
-        if screen:
-            area = screen.availableGeometry()
-            self.move(max(area.left(), area.right() - W - 34),
-                      max(area.top(), area.bottom() - H - 20))
+        self.move_to_corner()
         self.show()
+
+    def setup_input(self):
+        self.message_input = QtWidgets.QLineEdit(self)
+        self.message_input.setGeometry(42, 524, 310, 42)
+        self.message_input.setPlaceholderText("聊点什么，或输入想听的歌…")
+        self.message_input.setAccessibleName("聊天与点歌输入")
+        self.message_input.setMaxLength(1000)
+        self.message_input.setStyleSheet("QLineEdit{background:#fffdf9;color:#382e30;"
+            "border:1px solid #dfd4cb;border-radius:12px;padding:0 11px;font-size:13px}"
+            "QLineEdit:focus{border:1px solid #a77e76}")
+        self.message_input.textEdited.connect(self.note_interaction)
+        self.message_input.returnPressed.connect(self.submit_message)
+        self.send_button = QtWidgets.QPushButton("↑", self)
+        self.send_button.setGeometry(361, 524, 46, 42)
+        self.send_button.setAccessibleName("暂存输入")
+        self.send_button.setToolTip("暂存本次输入；聊天和播放服务尚未接入")
+        self.send_button.setStyleSheet("QPushButton{background:#755e5c;color:#fffaf5;"
+            "border:0;border-radius:12px;font-size:22px} QPushButton:disabled{background:#c9bbb4}")
+        self.send_button.setEnabled(False)
+        self.message_input.textChanged.connect(
+            lambda text: self.send_button.setEnabled(bool(text.strip())))
+        self.send_button.clicked.connect(self.submit_message)
+        self.input_status = QtWidgets.QLabel("聊天与点歌待接入 · 右键切换状态", self)
+        self.input_status.setGeometry(43, 574, 364, 22)
+        self.input_status.setStyleSheet("color:#887570;font-size:11px;background:transparent")
+        self.input_status.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+
+    def submit_message(self):
+        text = self.message_input.text().strip()
+        if not text:
+            return
+        self.note_interaction()
+        self.last_message = text
+        self.message_input.clear()
+        self.message_submitted.emit(text)
+        self.input_status.setText("已暂存本次输入 · 聊天与点歌尚未接入")
+        self.input_status.setToolTip(text)
 
     def setup_desktop_controls(self):
         """Install a persistent show/hide/quit menu; called only by the app entry point."""
@@ -130,8 +154,17 @@ class OliviaPet(QtWidgets.QWidget):
         self.addAction(self.quit_action)
         self.show_action = QtWidgets.QAction("显示 Olivia", self)
         self.show_action.setShortcut(QtGui.QKeySequence("Ctrl+0"))
+        self.show_action.setShortcutContext(QtCore.Qt.ApplicationShortcut)
+        self.addAction(self.show_action)
         self.show_action.triggered.connect(self.restore_window)
         if sys.platform == "darwin":
+            from mac_hotkey import MacRestoreHotkey
+            try:
+                self.restore_hotkey = MacRestoreHotkey(self.restore_window, self)
+                app.aboutToQuit.connect(self.restore_hotkey.close)
+            except (OSError, AttributeError) as error:
+                self.input_status.setText("快捷键不可用，可用菜单栏音符恢复窗口")
+                print(f"Cannot initialize macOS restore shortcut: {error}", file=sys.stderr)
             self.menu_bar = QtWidgets.QMenuBar()
             menu = self.menu_bar.addMenu("Olivia")
             menu.addAction(self.show_action)
@@ -164,260 +197,178 @@ class OliviaPet(QtWidgets.QWidget):
             app.aboutToQuit.connect(self.tray.hide)
 
     def restore_window(self):
+        if self.restore_hotkey:
+            self.restore_hotkey.close()
         self.showNormal()
         self.raise_()
         self.activateWindow()
 
     def hide_to_tray(self):
+        if self.restore_hotkey and not self.restore_hotkey.register():
+            # Keep a Dock-visible recovery route if another app owns the hotkey.
+            self.input_status.setText("⌘0 注册失败，请通过 Dock 或菜单栏恢复")
+            self.showMinimized()
+            return
         if self.tray is not None and self.tray.isVisible():
             self.hide()
         else:
             self.showMinimized()
 
+    def showEvent(self, event):
+        if self.restore_hotkey and not self.isMinimized():
+            self.restore_hotkey.close()
+        super().showEvent(event)
+
+    def changeEvent(self, event):
+        if (event.type() == QtCore.QEvent.WindowStateChange and self.isVisible()
+                and not self.isMinimized() and self.restore_hotkey):
+            # Dock restoration does not necessarily send another showEvent.
+            self.restore_hotkey.close()
+        super().changeEvent(event)
+
+    def closeEvent(self, event):
+        if self.restore_hotkey:
+            self.restore_hotkey.close()
+        if self.tray:
+            self.tray.hide()
+        if self.menu_bar:
+            self.menu_bar.deleteLater()
+        super().closeEvent(event)
+
     def tick(self):
         now = time.monotonic()
-        self.phase += min(0.08, now - self.last_clock) * (2.5 if not self.sleeping else 0.42)
+        if not self.sleeping:
+            self.phase += max(0, min(.08, now - self.last_clock)) * 1.4
         self.last_clock = now
-        if self.mood != "idle" and now > self.mood_until:
-            self.mood = "idle"
         if now >= self.blink_until:
             self.blink_until = 0.0
-        if not self.sleeping and self.mood == "idle":
-            if (self.pose == "idle" and not self.blink_pose.isNull()
-                    and not self.bubble_until and now >= self.next_blink):
-                self.blink_until = now + 0.18
-                self.next_blink = now + random.uniform(14.0, 24.0)
-            if now - self.last_interaction >= 55.0 and now >= self.next_idle_reaction:
-                self.say(random.choice([
-                    "安静的时候，也适合听一段旋律。",
-                    "我在这里陪你歇一会儿。",
-                    "要不要记下一首今天想到的歌？",
-                ]), 4.5)
-                self.next_idle_reaction = now + 55.0
-        if self.bubble_until and now > self.bubble_until:
-            self.bubble_until = 0
+        if not self.sleeping and self.isVisible() and not self.isMinimized():
+            if self.pose == "idle" and not self.blink_pose.isNull() and now >= self.next_blink:
+                self.blink_until = now + .18
+                self.next_blink = now + random.uniform(9, 17)
+            busy = (self.drag_offset is not None or self.menu_open
+                    or bool(self.message_input.text())
+                    or (self.notes_dialog is not None and self.notes_dialog.isVisible()))
+            if (self.automatic and not busy and now >= self.next_activity
+                    and now - self.last_interaction >= 8):
+                candidates = [name for name in ("idle", *self.poses) if name != self.pose]
+                if candidates:
+                    self.set_pose(random.choice(candidates), manual=False)
         self.update()
+
+    def portrait_target(self):
+        pix = self.idle if self.pose == "idle" else self.poses[self.pose]
+        size = pix.size().scaled(330, 434, QtCore.Qt.KeepAspectRatio)
+        return QtCore.QRectF((W - size.width()) / 2, 6 + math.sin(self.phase),
+                             size.width(), size.height())
+
+    def eye_regions(self):
+        target = self.portrait_target()
+        return [QtCore.QRectF(target.x() + x * target.width(), target.y() + y * target.height(),
+                              w * target.width(), h * target.height()) for x, y, w, h in self.EYES]
 
     def paintEvent(self, event):
         p = QtGui.QPainter(self)
-        # Start from transparent pixels so cut-outs and overlays composite cleanly.
-        p.setCompositionMode(QtGui.QPainter.CompositionMode_Clear)
-        p.fillRect(event.rect(), QtCore.Qt.transparent)
+        # Clear the backing pixels on every paint, including newly transparent
+        # areas after a pose switch. Never retain the previous portrait layer.
+        p.setCompositionMode(QtGui.QPainter.CompositionMode_Source)
+        p.fillRect(self.rect(), QtCore.Qt.transparent)
         p.setCompositionMode(QtGui.QPainter.CompositionMode_SourceOver)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
-        bob = math.sin(self.phase) * (3.0 if not self.sleeping else 1.0)
-
-        # Floating musical accents
-        p.setPen(QtCore.Qt.NoPen)
-        for x, y, r, a in [(28, 225, 4, 90), (395, 196, 3, 70), (385, 330, 5, 85)]:
-            p.setBrush(QtGui.QColor(239, 209, 173, int(a + 20 * math.sin(self.phase + x))))
-            p.drawEllipse(QtCore.QPointF(x, y + math.sin(self.phase + y) * 5), r, r)
-        p.setPen(QtGui.QColor(200, 173, 151, 145))
-        f = p.font(); f.setPointSize(17); f.setWeight(QtGui.QFont.Light); p.setFont(f)
-        p.drawText(QtCore.QPointF(30, 295 + math.sin(self.phase * .8) * 3), "♪")
-        p.drawText(QtCore.QPointF(397, 262 + math.sin(self.phase * .8 + 1) * 3), "♫")
-
-        # New action illustrations are single static pose images, not frame animations.
-        blink_active = (self.pose == "idle" and self.blink_until > time.monotonic()
-                        and self.mood == "idle" and not self.sleeping)
-        pix = self.idle
-        action_pix = self.poses.get(self.pose)
-        if action_pix is not None:
-            pix = action_pix
-        elif self.pose == "idle" and not blink_active and self.movie is not None and self.movie.currentPixmap().isNull() is False:
-            pix = self.movie.currentPixmap()
-        if self.pose == "idle" and self.mood == "wave" and not self.wave.isNull():
-            pix = self.wave
+        pix = self.idle if self.pose == "idle" else self.poses[self.pose]
         if not pix.isNull():
-            if action_pix is not None:
-                scale = min(298 / pix.width(), 448 / pix.height())
-                target_w = pix.width() * scale
-                target_h = pix.height() * scale
-                x = (W - target_w) / 2
-                y = -2 + bob * 0.35
-            else:
-                scale = 1.0 + (0.008 * math.sin(self.phase * 0.75) if self.mood != "wave" else 0.014 * math.sin(self.phase * 2.2))
-                target_w = 405 * scale
-                target_h = 540 * scale
-                x = (W - target_w) / 2
-                y = -7 + bob - (target_h - 540) / 2
-            target = QtCore.QRectF(x, y, target_w, target_h)
+            target = self.portrait_target()
             p.drawPixmap(target, pix, QtCore.QRectF(pix.rect()))
-            if blink_active and not self.blink_pose.isNull():
-                # Soft oval clips hide the generated frame's unrelated pixel changes.
+            if (self.pose == "idle" and not self.sleeping
+                    and self.blink_until > time.monotonic() and not self.blink_pose.isNull()):
                 clip = QtGui.QPainterPath()
-                for nx, ny, nw, nh in ((0.397, 0.178, 0.078, 0.041), (0.505, 0.147, 0.078, 0.041)):
-                    clip.addEllipse(QtCore.QRectF(x + nx * target_w, y + ny * target_h,
-                                                  nw * target_w, nh * target_h))
+                for rect in self.eye_regions():
+                    clip.addEllipse(rect)
                 p.save()
                 p.setClipPath(clip)
                 p.drawPixmap(target, self.blink_pose, QtCore.QRectF(self.blink_pose.rect()))
                 p.restore()
-        else:
-            p.setBrush(QtGui.QColor(245, 238, 231, 235))
-            p.setPen(QtGui.QPen(QtGui.QColor(211, 194, 183), 1))
-            p.drawRoundedRect(QtCore.QRectF(70, 90, 290, 360), 38, 38)
-            p.setPen(INK); p.drawText(QtCore.QRect(92, 220, 250, 50), QtCore.Qt.AlignCenter, "Portrait asset is missing")
-
-        # Small fan-made label
         p.setPen(QtCore.Qt.NoPen)
-        p.setBrush(QtGui.QColor(255, 251, 246, 222))
-        f = p.font(); f.setPointSize(8); f.setBold(True); p.setFont(f)
-        label = "AI FAN ART · REF-BASED"
-        badge = QtCore.QRectF(8, 15, p.fontMetrics().horizontalAdvance(label) + 20, 28)
-        p.drawRoundedRect(badge, 14, 14)
-        p.setPen(QtGui.QColor("#766360"))
-        p.drawText(badge, QtCore.Qt.AlignCenter, label)
-
-        # Speech card
-        if self.bubble_until and self.pose == "idle":
-            p.setPen(QtCore.Qt.NoPen)
-            p.setBrush(QtGui.QColor(255, 251, 247, 240))
-            p.drawRoundedRect(QtCore.QRectF(310, 47, 130, 66), 18, 18)
-            p.setBrush(QtGui.QColor(255, 251, 247, 240))
-            p.drawEllipse(QtCore.QRectF(300, 102, 13, 13))
-            p.setPen(QtGui.QColor("#463b3b"))
-            f = p.font(); f.setPointSize(9); f.setWeight(QtGui.QFont.Medium); p.setFont(f)
-            p.drawText(QtCore.QRectF(318, 54, 114, 51),
-                       QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft | QtCore.Qt.TextWordWrap, self.bubble)
-
-        # Frosted companion card with an explicit pose row and a separate utility row.
-        card = QtCore.QRectF(20, 448, 410, 292)
-        p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 125), 1))
-        p.setBrush(QtGui.QColor(250, 246, 241, 238))
-        p.drawRoundedRect(card, 25, 25)
-        p.setPen(QtGui.QColor("#302729"))
-        f = p.font(); f.setPointSize(19); f.setWeight(QtGui.QFont.DemiBold); p.setFont(f)
-        p.drawText(QtCore.QRectF(42, 458, 250, 29), QtCore.Qt.AlignVCenter, "Olivia Lin")
-        p.setPen(QtGui.QColor("#8B7974"))
-        f = p.font(); f.setPointSize(10); f.setWeight(QtGui.QFont.Normal); p.setFont(f)
-        p.drawText(QtCore.QRectF(43, 487, 360, 20), QtCore.Qt.AlignVCenter, "钢琴 · 音乐与记忆 · 本地互动原型")
-        p.setPen(QtGui.QColor("#9B7772"))
-        f = p.font(); f.setPointSize(8); f.setWeight(QtGui.QFont.DemiBold); p.setFont(f)
-        pose_names = {"standing": "站立", "reading": "读书", "piano": "弹琴", "daydream": "发呆"}
-        pose_hint = (f"当前：{pose_names.get(self.pose, '动作')} · 按 I 或‘回 idle’返回"
-                     if self.pose != "idle" else "动作姿势为单张静帧 · 可用按键 S / R / P / D 切换")
-        p.drawText(QtCore.QRectF(43, 509, 360, 18), QtCore.Qt.AlignVCenter, pose_hint)
-
-        pose_labels = [("站一站", "standing"), ("读一会", "reading"),
-                       ("弹琴", "piano"), ("发发呆", "daydream")]
-        pose_labels = [(label, key) for label, key in pose_labels if key in self.poses]
-        self.pose_button_rects = {}
-        if pose_labels:
-            action_w, action_gap, action_y, action_h = 84, 7, 533, 42
-            action_left = (W - (len(pose_labels) * action_w + (len(pose_labels) - 1) * action_gap)) / 2
-            for i, (label, key) in enumerate(pose_labels):
-                rect = QtCore.QRectF(action_left + i * (action_w + action_gap), action_y, action_w, action_h)
-                self.pose_button_rects[key] = rect
-                p.setPen(QtCore.Qt.NoPen)
-                p.setBrush(QtGui.QColor("#755E5C") if self.pose == key else QtGui.QColor(239, 230, 221, 255))
-                p.drawRoundedRect(rect, 13, 13)
-                p.setPen(QtGui.QColor("#fffaf5") if self.pose == key else QtGui.QColor("#534548"))
-                f = p.font(); f.setPointSize(9); f.setWeight(QtGui.QFont.DemiBold); p.setFont(f)
-                p.drawText(rect, QtCore.Qt.AlignCenter, label)
-
-        labels = [("打招呼", "hello")]
-        if not self.blink_pose.isNull():
-            labels.append(("眨眨眼", "blink"))
-        labels.extend([("听一音", "piano"), ("小记事", "notes"), ("回 idle", "return")])
-        self.button_rects = {}
-        button_w = 68 if len(labels) == 5 else 80
-        gap = 6
-        left = (W - (len(labels) * button_w + (len(labels) - 1) * gap)) / 2
-        for i, (label, key) in enumerate(labels):
-            rect = QtCore.QRectF(left + i * (button_w + gap), 585, button_w, 46)
-            self.button_rects[key] = rect
-            p.setPen(QtCore.Qt.NoPen)
-            p.setBrush(QtGui.QColor(65, 54, 55, 255) if key == "hello" else QtGui.QColor(239, 230, 221, 255))
-            p.drawRoundedRect(rect, 15, 15)
-            p.setPen(QtGui.QColor("#fffaf5") if key == "hello" else QtGui.QColor("#534548"))
-            f = p.font(); f.setPointSize(9); f.setWeight(QtGui.QFont.DemiBold); p.setFont(f)
-            p.drawText(rect, QtCore.Qt.AlignCenter, label)
-
-        p.setPen(QtGui.QColor(124, 110, 105, 210))
-        f = p.font(); f.setPointSize(8); p.setFont(f)
-        p.drawText(QtCore.QRectF(45, 645, 360, 18), QtCore.Qt.AlignCenter, "空格打招呼  ·  B 眨眼  ·  I 回待机  ·  右键更多")
+        p.setBrush(CREAM)
+        p.drawRoundedRect(QtCore.QRectF(20, 450, 410, 157), 23, 23)
+        p.setPen(INK)
+        p.setFont(QtGui.QFont("Arial", 18, QtGui.QFont.DemiBold))
+        p.drawText(QtCore.QRectF(42, 466, 245, 28), QtCore.Qt.AlignVCenter, "Olivia Lin")
+        p.setFont(QtGui.QFont("Arial", 9))
+        p.setPen(QtGui.QColor("#907b74"))
+        mode = "已暂停" if self.sleeping else ("自在活动" if self.automatic else "保持姿势")
+        p.drawText(QtCore.QRectF(43, 497, 364, 18), QtCore.Qt.AlignVCenter,
+                   f"{mode} · {self.POSE_NAMES[self.pose]}")
+        p.setFont(QtGui.QFont("Arial", 8))
+        p.drawText(QtCore.QRectF(276, 473, 129, 18), QtCore.Qt.AlignRight, "AI 同人 · 非官方")
         p.end()
 
-    def say(self, text, duration=4.0, wave=False):
-        self.bubble = text
-        self.bubble_until = time.monotonic() + duration
-        if wave:
-            self.mood = "wave"
-            self.mood_until = time.monotonic() + 3.5
-        self.update()
+    def note_interaction(self, *_):
+        self.last_interaction = time.monotonic()
 
-    def note_interaction(self):
+    def set_pose(self, name, manual=True):
+        if name != "idle" and name not in self.poses:
+            return
         now = time.monotonic()
-        self.last_interaction = now
-        self.next_idle_reaction = now + 55.0
-        self.next_blink = now + random.uniform(8.0, 14.0)
-
-    def hello(self):
-        self.note_interaction()
-        self.pose = "idle"
-        self.say(random.choice(["你好呀，愿今天有一段好听的旋律。", "我刚好在想一首钢琴曲。", "要不要一起记住今天的声音？", "嗨，见到你真好。"]), wave=True)
-
-    def set_pose(self, name):
-        if name not in self.poses:
-            return
-        self.note_interaction()
+        if manual:
+            self.note_interaction()
+            self.automatic = False
         self.pose = name
-        self.mood = "idle"
         self.blink_until = 0.0
-        self.bubble_until = 0.0
+        self.next_blink = now + random.uniform(9, 15)
+        self.next_activity = now + random.uniform(*self.DWELL_SECONDS[name])
         self.update()
 
-    def return_idle(self):
+    def resume_automatic(self):
+        self.automatic = True
+        self.sleeping = False
         self.note_interaction()
-        self.pose = "idle"
-        self.mood = "idle"
-        self.blink_until = 0.0
-        self.say("回到待机啦。", 2.8)
-
-    def blink(self):
-        if self.blink_pose.isNull() or self.sleeping or self.mood != "idle" or self.pose != "idle":
-            return
-        self.note_interaction()
-        self.blink_until = time.monotonic() + 0.18
-        self.bubble_until = 0.0
+        self.next_activity = time.monotonic() + random.uniform(*self.DWELL_SECONDS[self.pose])
         self.update()
 
-    def piano(self):
-        self.note_interaction()
-        # An intentionally local click cue, not a piano/MIDI performance engine.
-        QtWidgets.QApplication.beep()
-        self.say(random.choice(["叮——像雨落在窗边。", "这一个音，送给你。", "听见了吗？像一个小小的开场。"]), 3.2)
+    def toggle_rest(self):
+        self.sleeping = not self.sleeping
+        self.blink_until = 0.0
+        self.next_blink = time.monotonic() + random.uniform(9, 15)
+        self.next_activity = time.monotonic() + random.uniform(*self.DWELL_SECONDS[self.pose])
+        self.update()
 
     def notes(self):
         self.note_interaction()
-        self.notes_dialog = NotesDialog(self)
+        if self.notes_dialog is None:
+            self.notes_dialog = NotesDialog(self)
         self.notes_dialog.show()
         self.notes_dialog.raise_()
-        self.say("把喜欢的旋律和记忆写下来吧。", 4.5)
+
+    def move_to_corner(self):
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        if screen:
+            area = screen.availableGeometry()
+            self.move(max(area.left(), area.right() - W - 34),
+                      max(area.top(), area.bottom() - H - 20))
 
     def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.RightButton:
-            self.note_interaction()
-            self.context_menu(event.globalPos()); return
         if event.button() == QtCore.Qt.LeftButton:
             self.note_interaction()
-            point = event.pos()
-            for key, rect in self.pose_button_rects.items():
-                if rect.contains(point):
-                    self.set_pose(key)
-                    return
-            for key, rect in self.button_rects.items():
-                if rect.contains(point):
-                    {"hello": self.hello, "blink": self.blink,
-                     "piano": self.piano, "notes": self.notes,
-                     "return": self.return_idle}[key]()
-                    return
-            if 110 < point.y() < 475:
-                self.hello(); return
             self.drag_offset = event.globalPos() - self.frameGeometry().topLeft()
             event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event):
+        self.open_context_menu(event.globalPos())
+        event.accept()
+
+    def open_context_menu(self, position):
+        self.note_interaction()
+        menu = self.build_context_menu()
+        self.menu_open = True
+        try:
+            menu.exec_(position)
+        finally:
+            self.menu_open = False
+            menu.deleteLater()
 
     def mouseMoveEvent(self, event):
         if self.drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
@@ -428,64 +379,30 @@ class OliviaPet(QtWidgets.QWidget):
         self.drag_offset = None
         event.accept()
 
-    def mouseDoubleClickEvent(self, event):
-        self.note_interaction()
-        self.sleeping = not self.sleeping
-        self.say("休息一下……" if self.sleeping else "我回来啦。", 3)
-
-    def context_menu(self, pos):
+    def build_context_menu(self):
         menu = QtWidgets.QMenu(self)
-        menu.setStyleSheet("QMenu{background:#fffaf5;color:#382e30;border:1px solid #e5d8ce;padding:5px} QMenu::item{padding:7px 20px;border-radius:5px} QMenu::item:selected{background:#efe3d9}")
-        pose_actions = {}
-        for name, label in (("standing", "站一站"), ("reading", "读一会"),
-                            ("piano", "弹琴姿势"), ("daydream", "发发呆")):
-            if name in self.poses:
-                pose_actions[menu.addAction(label)] = name
-        return_pose = menu.addAction("回到 idle 姿势")
+        automatic = menu.addAction("自动活动")
+        automatic.setCheckable(True)
+        automatic.setChecked(self.automatic)
+        automatic.triggered.connect(self.resume_automatic)
         menu.addSeparator()
-        move = menu.addAction("移到屏幕角落")
-        sleep = menu.addAction("休息 / 唤醒")
+        for name in ("idle", *self.poses):
+            action = menu.addAction(self.POSE_NAMES[name] + " · 保持")
+            action.setCheckable(True)
+            action.setChecked(not self.automatic and self.pose == name)
+            action.triggered.connect(lambda checked=False, pose=name: self.set_pose(pose))
         menu.addSeparator()
-        about = menu.addAction("关于这个粉丝原型")
-        hide = menu.addAction("收起窗口")
-        quit_action = menu.addAction("退出")
-        chosen = menu.exec_(pos)
-        if chosen in pose_actions:
-            self.set_pose(pose_actions[chosen])
-        elif chosen == return_pose:
-            self.return_idle()
-        elif chosen == move:
-            screen = QtWidgets.QApplication.primaryScreen()
-            if screen:
-                area = screen.availableGeometry()
-                self.move(area.left() + 18, area.bottom() - H - 16)
-        elif chosen == sleep:
-            self.sleeping = not self.sleeping
-            self.say("休息一下……" if self.sleeping else "我回来啦。", 3)
-        elif chosen == about:
-            QtWidgets.QMessageBox.about(self, "关于 Olivia Lin 桌面宠物", "<b>Olivia Lin · fan-made desktop pet</b><br><br>这是一个本地运行的非官方互动原型，不隶属于 BSide 或其权利人。人物立绘由图像生成器根据公开 BSide 图片搜索参考图生成，和参考脸部高度相似；应视为参考条件 AI 同人图，不能称为独立原创设计或官方美术。<br><br>互动、记事本与钢琴提示音均为本机演示功能；完整立绘来源记录见项目的 docs/PROVENANCE.md。")
-        elif chosen == hide:
-            self.hide_to_tray()
-        elif chosen == quit_action:
-            QtWidgets.QApplication.quit()
+        menu.addAction("继续活动" if self.sleeping else "暂停活动", self.toggle_rest)
+        menu.addAction("小记事", self.notes)
+        menu.addAction("移到屏幕角落", self.move_to_corner)
+        menu.addSeparator()
+        menu.addAction("收起窗口", self.hide_to_tray)
+        menu.addAction("退出", QtWidgets.QApplication.quit)
+        return menu
 
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Escape:
             self.hide_to_tray()
-        elif event.key() == QtCore.Qt.Key_Space:
-            self.hello()
-        elif event.key() == QtCore.Qt.Key_B:
-            self.blink()
-        elif event.key() == QtCore.Qt.Key_S:
-            self.set_pose("standing")
-        elif event.key() == QtCore.Qt.Key_R:
-            self.set_pose("reading")
-        elif event.key() == QtCore.Qt.Key_P:
-            self.set_pose("piano")
-        elif event.key() == QtCore.Qt.Key_D:
-            self.set_pose("daydream")
-        elif event.key() == QtCore.Qt.Key_I:
-            self.return_idle()
         else:
             super().keyPressEvent(event)
 
