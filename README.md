@@ -4,7 +4,7 @@ A lightweight, always-on-top macOS and Linux/X11 desktop companion based on the 
 
 ## Run on macOS
 
-Install Python 3.10+ from [python.org](https://www.python.org/downloads/macos/) or Homebrew (`brew install python`) if it is not already installed. Then **double-click `Start.command`** in Finder. The first launch creates `.venv/` inside the project and installs the pinned PyQt5 dependency from PyPI; later launches work offline and reuse that environment. The Terminal window stays open while the pet runs.
+Install Python 3.10+ from [python.org](https://www.python.org/downloads/macos/) or Homebrew (`brew install python`) if it is not already installed. Then **double-click `Start.command`** in Finder. The first launch creates `.venv/` inside the project and installs the pinned PyQt5 and OpenAI SDK dependencies from PyPI; later launches reuse that environment. Chat requires access to the configured Ark endpoint. The Terminal window stays open while the pet runs.
 
 The equivalent terminal commands are:
 
@@ -24,7 +24,7 @@ Native desktop launch and interactions were checked on macOS 14.8 / Apple Silico
 
 ## Run on Linux/X11
 
-Install Python 3 and PyQt5 (for example `sudo apt install python3-pyqt5` on Debian/Ubuntu), then run:
+Install Python 3.10+, create a virtual environment, and install `requirements.txt` (PyQt5 and the OpenAI-compatible SDK), then run:
 
 ```bash
 ./run.sh
@@ -37,7 +37,8 @@ To add an Applications-menu shortcut, run `./scripts/install_launcher.sh`. The r
 - Olivia starts in **自动活动**: she randomly switches between idle, standing, reading, piano and daydreaming without repeating the current pose. Activities last roughly 30–140 seconds depending on the pose; reading lasts longer than standing. There are no spontaneous greetings or system beeps.
 - Right-click to choose a pose and **keep it**. Select **自动活动** to resume the schedule. Manual selection never times out back to idle.
 - Automatic changes wait while you type a draft, drag the pet or use its context menu. Hidden/minimized pets pause automatic activity. Ordinary letter keys and Space belong to the input field.
-- The main card contains an input field for future conversation/song requests. Enter or the arrow stores the latest submission **in memory for this session** and emits `message_submitted(str)` for a future backend. The UI explicitly says the service is not connected. It does not send network requests, play songs, or generate replies.
+- Enter or the arrow sends a message to a local backend, which streams an Ark model reply into a comic-style speech bubble beside Olivia. Sending again during generation supplements the current input and regenerates the reply. The oval bubble grows with its text and only scrolls at its maximum size. It supports copying and hides after 30 idle seconds; reading pauses the timer. Click **对话**, or use the context menu’s **关闭对话 / 展开对话**, to toggle it. There are no stop-generation controls: continue talking to steer. The bubble has no close cross; the dialogue toggle hides it without interrupting the reply. Reconnect through the right-click menu if needed. This release supports text chat; it does not play music.
+- Chat history is saved in SQLite in the user data directory and reloaded on startup. Successful history is included in model context; superseded drafts and failed runs remain in storage but are excluded from later context. Configure `ARK_API_KEY` in the launching shell, or copy `.olivia.example.json` to the ignored `.olivia.local.json` for double-click launches. See [chat setup and tests](docs/CHAT_TESTING.md).
 - Drag the portrait or card to move the window. Right-click for automatic activity, fixed poses, move, hide and quit. Escape hides to the menu bar/tray, or minimizes if unavailable. Double-clicking no longer changes activity.
 
 All five poses are static transparent PNG illustrations, with a tiny vertical float. Idle blinks automatically every 9–17 seconds using only two clipped eye regions from `blink.png`. The base PNG and its size stay identical during a blink. This is not a rigged character, animated piano performance or page-turn sequence.
@@ -48,10 +49,14 @@ The renderer draws only the selected portrait, clears transparent pixels every f
 
 ```text
 pet.py                         Application, activity scheduler and input UI
+backend_client.py              Qt JSON-RPC client and backend process lifecycle
+speech_bubble.py               Streaming comic-style reply window
+backend/                       Service, harness, context provider, SQLite, Ark adapter
+prompts/olivia.md               Editable character system prompt
 mac_hotkey.py                  macOS hidden-window restore shortcut
 run.sh                         Shared macOS/Linux launch entry point
 Start.command                  Finder double-click launcher
-requirements.txt               Pinned Python UI dependency
+requirements.txt               Pinned Python UI and model SDK dependencies
 assets/
   portraits/                   idle.png, smile.png, blink.png
   poses/                       standing, reading, piano, daydream PNGs
@@ -61,12 +66,20 @@ art/references/                Source/reference images, never loaded by the app
 docs/
   PROVENANCE.md                Asset origins and revision history
   art/                         Generation prompts and accepted asset hashes
-tests/                         Qt interaction tests
+tests/                         Backend, transport, UI integration and desktop tests
 output/                        Local previews/candidates, ignored by Git
 build/                         Render intermediates, ignored by Git
 ```
 
 Approved character artwork lives in `assets/`; the legacy smile art is retained for provenance. The four action poses wear the selected Dior Boy-inspired platform loafers with the earlier shorter shorts and slimmer leg contours. Idle, smile and blink retain their original artwork. The current renderer selects one PNG by activity, plus the idle eye overlay when blinking.
+
+## Chat architecture
+
+- [Overall design](docs/AGENT_BACKEND.md) — process boundaries, modules and UI behavior.
+- [Communication protocol](docs/CHAT_PROTOCOL.md) — streaming, steer, cancellation and errors.
+- [History and memory](docs/HISTORY_MEMORY.md) — SQLite schema and replaceable context provider.
+- [Persona sources](docs/PERSONA.md) — public character background and fan-written dialogue style.
+- [Run and test chat](docs/CHAT_TESTING.md) — setup, offline tests, live backend and UI smoke scripts.
 
 ## Generate local previews
 

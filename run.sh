@@ -8,8 +8,8 @@ elif [[ -x .venv/bin/python ]]; then
 else
   PET_PYTHON="$(command -v python3 || true)"
 fi
-if [[ -z "$PET_PYTHON" ]] || ! "$PET_PYTHON" -c 'from PyQt5 import QtWidgets' >/dev/null 2>&1; then
-  echo "Python 3 with PyQt5 is required. On macOS run ./scripts/setup_macos.sh first." >&2
+if [[ -z "$PET_PYTHON" ]] || ! "$PET_PYTHON" -c 'from PyQt5 import QtWidgets; import openai' >/dev/null 2>&1; then
+  echo "Python 3 with PyQt5 and openai is required. On macOS run ./scripts/setup_macos.sh first." >&2
   exit 1
 fi
 if [[ "$(uname -s)" == Darwin ]]; then

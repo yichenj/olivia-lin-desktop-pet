@@ -97,6 +97,9 @@ class OliviaPet(QtWidgets.QWidget):
         self.next_blink = now + random.uniform(9, 15)
         self.blink_until = 0.0
         self.last_message = ""
+        self.backend = None
+        self.bubble = None
+        self.chat_inputs = []
         self.setup_input()
         self.context_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Shift+F10"), self)
         self.context_shortcut.activated.connect(
@@ -140,9 +143,93 @@ class OliviaPet(QtWidgets.QWidget):
         self.note_interaction()
         self.last_message = text
         self.message_input.clear()
-        self.message_submitted.emit(text)
-        self.input_status.setText("已暂存本次输入 · 聊天与点歌尚未接入")
+        if self.backend:
+            if not self.backend.active and not self.backend.chat_pending:
+                self.chat_inputs = []
+            self.chat_inputs.append(text)
+            self.input_status.setText("正在补充…" if self.backend.active else "正在发送…")
+        else:
+            self.input_status.setText("已暂存本次输入 · 聊天与点歌尚未接入")
         self.input_status.setToolTip(text)
+        self.message_submitted.emit(text)
+
+    def attach_backend(self, client, auto_hide_seconds=30):
+        from speech_bubble import SpeechBubble
+        self.backend = client
+        self.bubble = SpeechBubble(self, auto_hide_seconds)
+        self.message_submitted.connect(client.send)
+        client.ready_changed.connect(self.backend_ready)
+        client.chat_started.connect(self.chat_started)
+        client.chat_delta.connect(lambda event: self.bubble.append(event["text"]))
+        client.chat_completed.connect(self.chat_completed)
+        client.request_failed.connect(self.chat_request_failed)
+        client.disconnected.connect(self.chat_disconnected)
+        self.send_button.setAccessibleName("发送消息")
+        self.send_button.setToolTip("发送消息；也可以继续补充刚才的话")
+        self.message_input.setPlaceholderText("和 Olivia 聊聊…")
+        self.message_input.setMaxLength(10000)
+        self.reply_button = QtWidgets.QToolButton(self)
+        self.reply_button.setText("对话")
+        self.reply_button.setGeometry(348, 494, 55, 23)
+        self.reply_button.setStyleSheet("QToolButton{border:0;color:#755e5c;background:transparent}")
+        self.reply_button.setToolTip("关闭 / 展开对话")
+        self.reply_button.clicked.connect(self.toggle_dialogue)
+        self.reply_button.show()
+        self.input_status.setText("正在连接聊天后台…")
+        QtWidgets.QApplication.instance().aboutToQuit.connect(client.close)
+        client.start()
+
+    def backend_ready(self, ready):
+        self.input_status.setText("随时和 Olivia 聊聊" if ready else "聊天暂时未连接 · 右键可重新连接")
+
+    def chat_started(self, event):
+        self.bubble.begin()
+        self.input_status.setText("Olivia 正在想… 你可以继续说")
+
+    def chat_completed(self, event):
+        self.bubble.finish(event)
+        if event["status"] == "completed":
+            self.input_status.setText("点击「对话」可收起或展开刚才的话")
+        else:
+            message = event.get("error", {}).get("message", "回复已停止")
+            self.input_status.setText(message)
+            self.input_status.setToolTip(message)
+
+    def chat_request_failed(self, event):
+        text = event.get("text")
+        if text:
+            draft = self.message_input.text()
+            self.message_input.setText(text + (" " + draft if draft else ""))
+        self.input_status.setText(event["message"])
+        self.input_status.setToolTip(event["message"])
+
+    def chat_disconnected(self, message):
+        self.input_status.setText(message)
+        if self.bubble and self.bubble.streaming:
+            self.bubble.finish({"status": "interrupted", "error": {"message": message}})
+
+    def retry_chat(self):
+        if self.backend and not self.backend.active and self.chat_inputs:
+            if not self.message_input.text().strip():
+                self.message_input.setText("\n".join(self.chat_inputs))
+            self.message_input.setFocus()
+
+    def toggle_dialogue(self):
+        if self.bubble:
+            if self.bubble.isVisible():
+                self.bubble.dismiss()
+            else:
+                self.bubble.reveal()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if self.bubble:
+            self.bubble.reposition()
+
+    def hideEvent(self, event):
+        if self.bubble:
+            self.bubble.hide()
+        super().hideEvent(event)
 
     def setup_desktop_controls(self):
         """Install a persistent show/hide/quit menu; called only by the app entry point."""
@@ -218,6 +305,8 @@ class OliviaPet(QtWidgets.QWidget):
         if self.restore_hotkey and not self.isMinimized():
             self.restore_hotkey.close()
         super().showEvent(event)
+        if self.bubble:
+            self.bubble.sync_visibility()
 
     def changeEvent(self, event):
         if (event.type() == QtCore.QEvent.WindowStateChange and self.isVisible()
@@ -225,8 +314,15 @@ class OliviaPet(QtWidgets.QWidget):
             # Dock restoration does not necessarily send another showEvent.
             self.restore_hotkey.close()
         super().changeEvent(event)
+        if event.type() == QtCore.QEvent.WindowStateChange and self.bubble:
+            self.bubble.sync_visibility()
 
     def closeEvent(self, event):
+        if self.backend:
+            self.backend.close()
+        if self.bubble:
+            self.bubble.timer.stop()
+            self.bubble.hide()
         if self.restore_hotkey:
             self.restore_hotkey.close()
         if self.tray:
@@ -381,6 +477,13 @@ class OliviaPet(QtWidgets.QWidget):
 
     def build_context_menu(self):
         menu = QtWidgets.QMenu(self)
+        if self.backend:
+            dialogue = menu.addAction("关闭对话" if self.bubble.isVisible() else "展开对话", self.toggle_dialogue)
+            dialogue.setEnabled(bool(self.bubble.content or self.bubble.streaming))
+            menu.addAction("重试上次聊天（填入输入框）", self.retry_chat)
+            reconnect = menu.addAction("重新连接聊天后台", self.backend.start)
+            reconnect.setEnabled(not self.backend.ready)
+            menu.addSeparator()
         automatic = menu.addAction("自动活动")
         automatic.setCheckable(True)
         automatic.setChecked(self.automatic)
@@ -413,6 +516,13 @@ def main():
     app.setQuitOnLastWindowClosed(True)
     pet = OliviaPet()
     pet.setup_desktop_controls()
+    from backend_client import BackendClient
+    from backend.config import load_config
+    try:
+        seconds = load_config().bubble_seconds
+    except (ValueError, OSError):
+        seconds = 30
+    pet.attach_backend(BackendClient(pet), seconds)
     return app.exec_()
 
 

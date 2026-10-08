@@ -7,3 +7,9 @@ __pycache__/
 /output/
 /build/
 /.venv/
+
+# Local credentials and conversation data.
+/.olivia.local.json
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.lock
