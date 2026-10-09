@@ -29,6 +29,7 @@ class BackendProbe:
         self.request_id = 0
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
+        self.wait(lambda event: event.get("method") == "backend/ready")
 
     def _read(self):
         for line in self.process.stdout:
@@ -86,25 +87,21 @@ def run(live=False):
         database = Path(directory) / "history.sqlite3"
         probe = BackendProbe(database, live)
         try:
-            assert probe.response(probe.send("initialize", {}))["protocolVersion"] == 1
             request_id = probe.send("chat/send", {"text": "请记住我的测试暗号是蓝色雨伞。用一句话确认。"})
-            first = probe.response(request_id)
+            assert probe.response(request_id) == {}
             if not live:
                 probe.wait(lambda e: e.get("method") == "chat/delta")
-                result = probe.response(probe.send("chat/steer", {"chatId": first["chatId"], "text": "补充：别提钢琴。"}))
-                assert result["generation"] == 2
+                assert probe.response(probe.send("chat/send", {"text": "补充：别提钢琴。"})) == {}
             reply = probe.completed(180 if live else 20)
             assert reply["text"]
             assert any(e.get("method") == "chat/delta" for e in probe.events)
-            print("PASS: process handshake, streamed reply" + (", steer" if not live else " (live Ark)"))
+            assert all("generation" not in e.get("params", {}) and "agentId" not in e.get("params", {}) for e in probe.events)
+            print("PASS: backend ready, text-only sends, streamed reply" + (", continued input" if not live else " (live Ark)"))
         finally:
             probe.close()
         probe = BackendProbe(database, live)
         try:
-            probe.response(probe.send("initialize", {}))
-            history = probe.response(probe.send("history/list", {"limit": 20}))
-            assert any(m["role"] == "assistant" and m["status"] == "completed" for m in history["messages"])
-            probe.response(probe.send("chat/send", {"text": "刚才我说的测试暗号是什么？请只回答暗号。"}))
+            assert probe.response(probe.send("chat/send", {"text": "刚才我说的测试暗号是什么？请只回答暗号。"})) == {}
             result = probe.completed(180 if live else 20)
             assert "蓝色雨伞" in result["text"], "Restarted context did not retain the test phrase"
             print("PASS: SQLite persistence, restart, second-turn context")

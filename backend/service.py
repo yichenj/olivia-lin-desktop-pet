@@ -1,10 +1,11 @@
-"""Application service. Requests are serialized; generation is cancellable work."""
+"""Continuous dialogue: the backend alone decides how new input affects a reply."""
 import asyncio
 from dataclasses import dataclass
 import sys
 import time
 
 from .harness import ModelError
+from .storage import MAIN_AGENT_ID
 
 
 class RpcError(Exception):
@@ -15,15 +16,15 @@ class RpcError(Exception):
 
 @dataclass
 class Generation:
-    chat_id: str
+    agent_id: int
     number: int
     message_id: str
     text: str = ""
     task: asyncio.Task | None = None
     usage: dict | None = None
 
-    def identity(self):
-        return {"chatId": self.chat_id, "generation": self.number, "messageId": self.message_id}
+    def display_identity(self):
+        return {"messageId": self.message_id}
 
 
 class ChatService:
@@ -43,46 +44,29 @@ class ChatService:
         method, params = request["method"], request.get("params", {})
         if not isinstance(params, dict):
             raise RpcError(-32602, "params 必须是对象")
-        if method == "initialize":
-            self.result(request, {"protocolVersion": 1, "capabilities": ["streaming", "steer", "history", "cancel"]})
-        elif method in ("chat/send", "chat/steer"):
-            text = params.get("text")
-            if not isinstance(text, str) or not text.strip() or len(text) > 10000:
-                raise RpcError(-32602, "请输入 1–10000 字的消息")
-            text = text.strip()
-            if method == "chat/send":
-                if self.active:
-                    raise RpcError(-32001, "正在回复，请使用补充消息")
-                chat_id, message_id = self.store.begin(text, self.model_name)
-                current = Generation(chat_id, 1, message_id)
-            else:
-                previous = self.active
-                if not previous or params.get("chatId") != previous.chat_id:
-                    raise RpcError(-32002, "上一条回复已结束，请重新发送这条消息")
-                await self.stop_task(previous)
-                number = previous.number + 1
-                message_id = self.store.steer(previous.chat_id, number, previous.message_id, previous.text, text)
-                current = Generation(previous.chat_id, number, message_id)
-            self.active = current
-            self.context.refresh()
-            self.result(request, current.identity())
-            self.notify("chat/started", {**current.identity(), "reset": True})
-            current.task = asyncio.create_task(self.generate(current))
-        elif method == "chat/cancel":
-            current = self.active
-            if not current or params.get("chatId") != current.chat_id:
-                raise RpcError(-32002, "没有正在进行的回复")
-            await self.stop_task(current)
-            self.result(request, {})
-            self.finish(current, "interrupted", "cancelled", "已停止回复")
-        elif method == "history/list":
-            limit, before = params.get("limit", 50), params.get("before")
-            if (type(limit) is not int or not 1 <= limit <= 200 or
-                    (before is not None and (type(before) is not int or not 0 < before <= 9223372036854775807))):
-                raise RpcError(-32602, "分页参数不合法")
-            self.result(request, self.store.list_messages(before, limit))
-        else:
+        if method != "chat/send":
             raise RpcError(-32601, "不支持的方法")
+        if set(params) != {"text"}:
+            raise RpcError(-32602, "只需提供 text")
+        text = params["text"]
+        if not isinstance(text, str) or not text.strip() or len(text) > 10000:
+            raise RpcError(-32602, "请输入 1–10000 字的消息")
+        text = text.strip()
+        # The input is always part of the same dialogue. Only this backend knows
+        # whether a draft is still being generated when it accepts the message.
+        previous = self.active
+        if previous:
+            await self.stop_task(previous)
+            number, message_id = self.store.steer(
+                previous.agent_id, previous.number, previous.message_id, previous.text, text)
+        else:
+            number, message_id = self.store.begin(text, self.model_name)
+        current = Generation(MAIN_AGENT_ID, number, message_id)
+        self.active = current
+        self.context.refresh()
+        self.result(request, {})
+        self.notify("chat/started", current.display_identity())
+        current.task = asyncio.create_task(self.generate(current))
 
     async def generate(self, current):
         checkpoint = time.monotonic()
@@ -103,7 +87,7 @@ class ChatService:
             self.finish(current, "failed", "internal_error", "回复过程中发生错误，请重试。")
 
     async def consume(self, current, checkpoint):
-        stream = self.harness.stream(current.chat_id)
+        stream = self.harness.stream(current.agent_id)
         try:
             async for piece in stream:
                 if self.active is not current:
@@ -114,7 +98,7 @@ class ChatService:
                     current.text += piece.text
                     if len(current.text) > 200000:
                         raise ModelError("reply_too_long", "回复过长，已停止生成。")
-                    self.notify("chat/delta", {**current.identity(), "text": piece.text})
+                    self.notify("chat/delta", {**current.display_identity(), "text": piece.text})
                 if time.monotonic() - checkpoint >= .25:
                     self.store.checkpoint(current.message_id, current.text)
                     checkpoint = time.monotonic()
@@ -124,10 +108,10 @@ class ChatService:
     def finish(self, current, status, code=None, message=None):
         if self.active is not current:
             return
-        self.store.finish(current.chat_id, current.message_id, current.text, status, code, current.usage)
+        self.store.finish(current.agent_id, current.number, current.message_id, current.text, status, code, current.usage)
         self.context.refresh()
         self.active = None
-        params = {**current.identity(), "status": status, "text": current.text}
+        params = {**current.display_identity(), "status": status, "text": current.text}
         if code:
             params["error"] = {"code": code, "message": message}
         self.notify("chat/completed", params)
@@ -145,5 +129,5 @@ class ChatService:
             current = self.active
             await self.stop_task(current)
             # EOF means there is no client to receive a terminal notification.
-            self.store.finish(current.chat_id, current.message_id, current.text, "interrupted", "process_exit")
+            self.store.finish(current.agent_id, current.number, current.message_id, current.text, "interrupted", "process_exit")
             self.active = None

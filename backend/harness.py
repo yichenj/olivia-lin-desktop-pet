@@ -22,8 +22,11 @@ class ArkModel:
         self.config = config
 
     async def stream(self, messages):
-        if not self.config.api_key:
-            raise ModelError("missing_api_key", "请配置 ARK_API_KEY 后重新启动桌宠。")
+        if not self.config.api_key.strip():
+            raise ModelError("missing_api_key", "请在本地配置中填写 api_key 后重新启动桌宠。")
+        missing = [name for name in ("base_url", "model") if not getattr(self.config, name).strip()]
+        if missing:
+            raise ModelError("missing_model_config", "请在本地配置中填写 " + "、".join(missing) + " 后重新启动桌宠。")
         from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError
         client = AsyncOpenAI(api_key=self.config.api_key, base_url=self.config.base_url,
                              timeout=60.0, max_retries=0)
@@ -89,7 +92,7 @@ class AgentHarness:
         self.context = context
         self.model = model
 
-    async def stream(self, chat_id):
-        async with aclosing(self.model.stream(self.context.build(chat_id))) as stream:
+    async def stream(self, agent_id):
+        async with aclosing(self.model.stream(self.context.build(agent_id))) as stream:
             async for piece in stream:
                 yield piece

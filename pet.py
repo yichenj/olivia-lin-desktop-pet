@@ -99,7 +99,6 @@ class OliviaPet(QtWidgets.QWidget):
         self.last_message = ""
         self.backend = None
         self.bubble = None
-        self.chat_inputs = []
         self.setup_input()
         self.context_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Shift+F10"), self)
         self.context_shortcut.activated.connect(
@@ -144,10 +143,7 @@ class OliviaPet(QtWidgets.QWidget):
         self.last_message = text
         self.message_input.clear()
         if self.backend:
-            if not self.backend.active and not self.backend.chat_pending:
-                self.chat_inputs = []
-            self.chat_inputs.append(text)
-            self.input_status.setText("正在补充…" if self.backend.active else "正在发送…")
+            self.input_status.setText("正在发送…")
         else:
             self.input_status.setText("已暂存本次输入 · 聊天与点歌尚未接入")
         self.input_status.setToolTip(text)
@@ -165,7 +161,7 @@ class OliviaPet(QtWidgets.QWidget):
         client.request_failed.connect(self.chat_request_failed)
         client.disconnected.connect(self.chat_disconnected)
         self.send_button.setAccessibleName("发送消息")
-        self.send_button.setToolTip("发送消息；也可以继续补充刚才的话")
+        self.send_button.setToolTip("随时和 Olivia 说话")
         self.message_input.setPlaceholderText("和 Olivia 聊聊…")
         self.message_input.setMaxLength(10000)
         self.reply_button = QtWidgets.QToolButton(self)
@@ -209,9 +205,9 @@ class OliviaPet(QtWidgets.QWidget):
             self.bubble.finish({"status": "interrupted", "error": {"message": message}})
 
     def retry_chat(self):
-        if self.backend and not self.backend.active and self.chat_inputs:
+        if self.backend and self.last_message:
             if not self.message_input.text().strip():
-                self.message_input.setText("\n".join(self.chat_inputs))
+                self.message_input.setText(self.last_message)
             self.message_input.setFocus()
 
     def toggle_dialogue(self):

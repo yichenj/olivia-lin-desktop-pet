@@ -17,8 +17,8 @@ def data_directory():
 @dataclass
 class Config:
     api_key: str = field(default="", repr=False)
-    base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    model: str = "ep-20260624173305-44d54"
+    base_url: str = field(default="", repr=False)
+    model: str = field(default="", repr=False)
     database: Path = field(default_factory=lambda: data_directory() / "chat.sqlite3")
     prompt: Path = field(default_factory=lambda: ROOT / "prompts/olivia.md")
     provider: str = "ark"

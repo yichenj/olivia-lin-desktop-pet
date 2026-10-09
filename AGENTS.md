@@ -1,8 +1,70 @@
-# Product principles
+# 先理解 Olivia，再修改代码
 
-- This pet is a continuous, natural conversation with Olivia, not a task-control interface. There is no user-facing thread or session management.
-- Do not add Stop/Cancel generation buttons or menu items. Further user input steers the current reply; cancellation is an internal mechanism for steer, shutdown, and tests.
-- The speech bubble is content-sized and rounded/oval. Short replies stay compact; scrollbars appear only after the maximum size is reached. Closing the bubble only hides it.
-- Keep the bubble free of controls, including close crosses. Close/reopen belongs to one context-menu toggle (关闭对话 / 展开对话); the card's 对话 entry uses the same behavior. Avoid technical execution status, task headers, or native button chrome in the character's speech.
-- Model text must stream from upstream SSE through JSON-RPC notifications to the UI without waiting for completion. Default conversational mode disables deep thinking to reduce first-text latency.
-- Preserve the portrait artwork and geometry when changing chat UI. Document UI decisions in docs/AGENT_BACKEND.md and protocol/storage contracts in their separate documents.
+## 产品的核心：始终在和同一个人说话
+
+Olivia 是一个持续与用户交流、同时能帮用户做事的角色。用户可以随时说下一句话，不必等待她说完，也不必说明这句话属于哪个话题或哪件事。一条回复结束，只代表这句话说完了，不代表一段关系、一个会话或一项用户任务结束。
+
+“像人一样持续对话”必须体现在系统边界上。不能只在界面隐藏任务按钮，底层却仍要求前端识别新任务、补充、取消、当前生成或会话归属。理解这些话的意义是 Olivia 的职责。
+
+用这个场景检查自己的理解：
+
+> 用户：帮我整理今天的会议。
+>
+> Olivia 接下这件事，后台开始处理。
+>
+> 用户：今天真的累死了。
+>
+> Olivia 接住这句话，原来的整理仍继续。
+>
+> 用户：产品那场别算了。
+>
+> Olivia 理解这句话在修改此前的委托。
+>
+> 用户：算了，刚才的别弄了。
+>
+> Olivia 理解指向并停止相应工作。
+>
+> 如果工作正常完成，她可以主动接回结果，不必等用户再问。
+
+这些在前端都是同一种行为：用户又说了一句话。不能让用户或前端替 Olivia 完成语义判断。
+
+## 前端只负责说话和听话
+
+- 唯一输入方法是 `chat/send({text})`。说话前、说话中、说完后完全相同，不能按后台忙闲切换发送方法。
+- 前端不接收或发送 agent ID、generation，也不提供 steer、cancel、创建/切换会话或 subagent 管理接口。生成与执行控制全部属于 backend。
+- 输出通知只驱动文字展示。messageId 用来关联正在显示的文字，不是用户输入需要指定的对象。受理响应和一条文字流结束都不代表任务边界。
+- 新话语与旧回复完成同时到达，由 backend 按实际接收状态处理。不能让用户因“上一条已结束”而重发，也不能把所有后续话语机械地当成任务补充。
+
+## 主 agent 负责理解，执行侧负责做事
+
+目标架构中，所有用户输入都先交给同一个主 agent。它维持人设和连续对话，理解意图，选择必要上下文，并决定创建、补充、查询或取消后台执行。不要在它前面再放一个模型路由器；无模型的运行时也不靠关键词替它判断语义。
+
+主 agent 不展开耗时的业务执行循环。执行通过 subagent 或异步工具完成，主 agent 保持可交谈；默认主 agent 关闭深度思考，subagent 开启思考处理复杂工作。委派受理后即返回，不能同步等待工作结束才允许继续对话。
+
+对话和执行有独立的上下文与生命周期。用户换话题、前台草稿重生成或气泡隐藏，都不隐式取消后台工作。明确的撤回由主 agent 理解，再调用内部取消能力。取消不等于回滚已经发生的外部动作。
+
+结果先回到主 agent，由它结合当下对话决定如何、何时开口。Subagent 不直接向用户输出。运行时负责排队、持久化、去重和唤醒，不承担语义理解。“常驻”表示角色与状态持续可用，不是让模型空转轮询。
+
+选择这套结构的原因是：聊天可以转向，做事仍能继续，之后还能自然接回来。单一 loop 也能异步；不要把 agent 数量本身当作目标。
+
+## 实现必须服从这个边界
+
+主 agent 固定为 1，父子关系用 parent_agent_id，消息按 agent_id 归属。role 表示消息角色；generation 是 backend 内部的生成版本，用户消息不携带它。具体存储规则在专门文档维护，不因此向前端增加控制概念。
+
+优先采用满足需求的最小结构。不要为一次回复再建一层 chat/session/task/execution 身份，也不要为尚未上线的项目预设旧协议兼容和数据迁移。模型适配器只接收模型上下文，人物与气泡只接收展示信号，不能依赖存储或执行细节。API key、服务 URL 和 model / endpoint 统一放在被 Git 忽略的本地配置文件，代码、示例和文档不写实际值。
+
+验证持续对话的实际行为：连续输入不被阻塞、话题改变不误伤工作、补充与撤回到达正确执行、后台结果自然回到对话。仅仅快速回复一句“收到”不算达成。
+
+当前已实现持续输入、流式回复和 agent 历史基础；subagent 调度与主动结果回流仍待实现。修改时核对代码和设计文档，不能把已确定的方向写成已经具备的能力。
+
+## 展示与文档
+
+正文必须从上游 SSE 经 JSON-RPC 流式到达 UI，不等全文完成。气泡是随内容增长的圆润/椭圆对话，短句紧凑，达到最大尺寸才滚动。气泡不放按钮、关闭叉号或执行状态；关闭/展开统一由右键菜单及卡片“对话”入口控制，关闭只隐藏。修改聊天时保留人物素材与几何。
+
+- [Agent 架构](docs/AGENT_ARCHITECTURE.md)：为什么这样设计、职责与取舍。
+- [后端与 UI](docs/AGENT_BACKEND.md)：模块边界和展示行为。
+- [前端通信](docs/CHAT_PROTOCOL.md)：唯一输入与流式展示契约。
+- [历史与记忆](docs/HISTORY_MEMORY.md)：内部身份、消息与存储规则。
+- [运行与验证](docs/CHAT_TESTING.md)：运行方式、测试及实际验证范围。
+
+发生设计变化时同步对应文档；本文件保留产品理解和不可越过的边界，不堆积尺寸、接口样例或排查记录。

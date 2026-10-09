@@ -40,7 +40,7 @@ class ArkModelTests(unittest.IsolatedAsyncioTestCase):
         stream = FakeStream([SimpleNamespace(usage=None, choices=[]), chunk("你好"), chunk(finish="stop")])
         client = client_with(stream)
         with patch("openai.AsyncOpenAI", return_value=client) as constructor:
-            pieces = [piece async for piece in ArkModel(Config(api_key="test-placeholder")).stream([])]
+            pieces = [piece async for piece in ArkModel(Config(api_key="test-placeholder", base_url="https://example.invalid/v3", model="test-model")).stream([])]
         self.assertEqual([p.text for p in pieces], ["你好"])
         self.assertTrue(stream.closed)
         client.close.assert_awaited_once()
@@ -54,7 +54,7 @@ class ArkModelTests(unittest.IsolatedAsyncioTestCase):
             stream = FakeStream([chunk("部分", finish)])
             client = client_with(stream)
             with patch("openai.AsyncOpenAI", return_value=client), self.assertRaises(ModelError):
-                _ = [piece async for piece in ArkModel(Config(api_key="test-placeholder")).stream([])]
+                _ = [piece async for piece in ArkModel(Config(api_key="test-placeholder", base_url="https://example.invalid/v3", model="test-model")).stream([])]
             self.assertTrue(stream.closed)
             client.close.assert_awaited_once()
 
@@ -63,7 +63,17 @@ class ArkModelTests(unittest.IsolatedAsyncioTestCase):
         response = httpx.Response(401, request=httpx.Request("POST", "https://example.invalid/chat"))
         client.chat.completions.create.side_effect = AuthenticationError("PRIVATE_PROVIDER_TEXT", response=response, body=None)
         with patch("openai.AsyncOpenAI", return_value=client), self.assertRaises(ModelError) as caught:
-            _ = [piece async for piece in ArkModel(Config(api_key="test-placeholder")).stream([])]
+            _ = [piece async for piece in ArkModel(Config(api_key="test-placeholder", base_url="https://example.invalid/v3", model="test-model")).stream([])]
         self.assertEqual(caught.exception.code, "model_http_401")
         self.assertNotIn("PRIVATE_PROVIDER_TEXT", str(caught.exception))
         client.close.assert_awaited_once()
+
+    async def test_missing_settings_fail_before_opening_a_client(self):
+        for field in ("api_key", "base_url", "model"):
+            config = Config(api_key="test-placeholder", base_url="https://example.invalid/v3", model="test-model")
+            setattr(config, field, " ")
+            with self.subTest(field=field), patch("openai.AsyncOpenAI") as constructor:
+                with self.assertRaises(ModelError) as caught:
+                    _ = [piece async for piece in ArkModel(config).stream([])]
+                constructor.assert_not_called()
+                self.assertIn(field, str(caught.exception))

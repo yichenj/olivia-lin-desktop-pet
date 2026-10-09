@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Visible Qt + backend smoke test; --live exercises Ark and mid-stream steer."""
+"""Visible Qt + backend smoke test; --live exercises Ark and continued user input."""
 import argparse
 import os
 from pathlib import Path
@@ -38,13 +38,13 @@ def run(live=False, output=None):
         timing = {}
         request_started = time.monotonic()
         def started(event):
-            timing[event["generation"]] = {"started": time.monotonic(), "deltas": 0}
+            timing[event["messageId"]] = {"started": time.monotonic(), "deltas": 0}
         def delta(event):
-            record = timing[event["generation"]]
+            record = timing[event["messageId"]]
             record.setdefault("first_text", time.monotonic())
             record["deltas"] += 1
         def completed(event):
-            timing[event["generation"]]["completed"] = time.monotonic()
+            timing[event["messageId"]]["completed"] = time.monotonic()
         client.chat_started.connect(started)
         client.chat_delta.connect(delta)
         client.chat_completed.connect(completed)
@@ -57,14 +57,15 @@ def run(live=False, output=None):
             wait(lambda: bool(pet.bubble.content) or bool(completions), 180)
             if completions and completions[-1]["status"] != "completed":
                 raise AssertionError(completions[-1].get("error", {}).get("message", "Model failed"))
-            if client.active:
+            first_message = client.current_message_id
+            if client.streaming:
                 pet.message_input.setText("补充：请不要推荐曲目，用三小段日常聊天回应我。")
                 pet.submit_message()
-                wait(lambda: client.active and client.active["generation"] == 2 or bool(completions), 30)
+                wait(lambda: client.streaming and client.current_message_id != first_message or bool(completions), 30)
             wait(lambda: bool(completions), 180)
             result = completions[-1]
             assert result["status"] == "completed", result.get("error", {}).get("message")
-            assert result["generation"] == 2, "Model finished before steer could be exercised"
+            assert len(timing) >= 2, "Model finished before continued input could be exercised"
             assert pet.bubble.content == result["text"]
             assert pet.bubble.isVisible()
             if output:
@@ -78,13 +79,13 @@ def run(live=False, output=None):
                 painter.drawPixmap(pet.bubble.pos() - bounds.topLeft(), pet.bubble.grab())
                 painter.end()
                 assert preview.save(str(output))
-            print("PASS: UI input → QProcess → streamed model → steer → bubble → completed")
+            print("PASS: UI input → QProcess → streamed model → continued input → bubble → completed")
             print("Provider:", "live Ark" if live else "mock", "| final characters:", len(result["text"]))
-            for generation, record in timing.items():
+            for index, (message_id, record) in enumerate(timing.items()):
                 if "first_text" in record:
-                    base = request_started if generation == 1 else record["started"]
-                    print(f"Generation {generation}: first visible text {record['first_text'] - base:.3f}s; delta notifications {record['deltas']}")
-            final_timing = timing[result["generation"]]
+                    base = request_started if index == 0 else record["started"]
+                    print(f"Message {message_id}: first visible text {record['first_text'] - base:.3f}s; delta notifications {record['deltas']}")
+            final_timing = timing[result["messageId"]]
             assert final_timing["deltas"] > 1
             assert final_timing["first_text"] < final_timing["completed"]
         finally:

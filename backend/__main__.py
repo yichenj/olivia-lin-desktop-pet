@@ -30,6 +30,7 @@ async def serve():
         reader = asyncio.StreamReader(limit=1024 * 1024)
         transport, _ = await asyncio.get_running_loop().connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)
+        service.notify("backend/ready", {})
         while line := await reader.readline():
             request = None
             try:

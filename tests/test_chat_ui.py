@@ -49,12 +49,17 @@ class ChatUITests(unittest.TestCase):
     def test_stream_steer_and_stale_fragments(self):
         self.send("先聊音乐")
         self.until(lambda: bool(self.pet.bubble.content))
-        old = dict(self.client.active)
+        old = {"messageId": self.client.current_message_id}
         self.send("改成聊电影")
-        self.until(lambda: self.client.active and self.client.active["generation"] == 2)
+        self.until(lambda: self.client.streaming and self.client.current_message_id != old["messageId"])
         self.client._dispatch({"jsonrpc": "2.0", "method": "chat/delta", "params": {**old, "text": "STALE"}})
-        self.until(lambda: self.client.active is None and not self.client.chat_pending)
+        active = self.client.current_message_id
+        self.client._dispatch({"jsonrpc": "2.0", "method": "chat/delta", "params": {"messageId": "unrelated-message", "text": "OTHER_MESSAGE"}})
+        self.client._dispatch({"jsonrpc": "2.0", "method": "chat/completed", "params": {**old, "text": "STALE_END", "status": "completed"}})
+        self.assertEqual(self.client.current_message_id, active)
+        self.until(lambda: not self.client.streaming and not self.client.pending)
         self.assertNotIn("STALE", self.pet.bubble.content)
+        self.assertNotIn("OTHER_MESSAGE", self.pet.bubble.content)
         self.assertIn("先聊音乐 / 改成聊电影", self.pet.bubble.content)
         self.assertEqual(self.pet.bubble.text.toPlainText(), self.pet.bubble.content)
         self.assertFalse(self.pet.bubble.streaming)
@@ -62,7 +67,7 @@ class ChatUITests(unittest.TestCase):
 
     def test_long_reply_scroll_hide_restore_and_edges(self):
         self.send("[test:long]")
-        self.until(lambda: self.client.active is None and bool(self.pet.bubble.content) and not self.client.chat_pending)
+        self.until(lambda: not self.client.streaming and bool(self.pet.bubble.content) and not self.client.pending)
         bubble = self.pet.bubble
         self.assertGreater(bubble.text.verticalScrollBar().maximum(), 0)
         area = self.pet.screen().availableGeometry()
@@ -100,22 +105,19 @@ class ChatUITests(unittest.TestCase):
         self.client.start()
         self.until(lambda: self.client.ready)
         self.send("恢复了")
-        self.until(lambda: self.client.active is None and not self.client.chat_pending)
+        self.until(lambda: not self.client.streaming and not self.client.pending)
         self.assertIn("恢复了", self.pet.bubble.content)
 
-    def test_failure_cancel_and_rapid_supplements(self):
+    def test_failure_then_new_input_and_rapid_messages(self):
         self.send("[test:error]")
-        self.until(lambda: self.client.active is None and not self.client.chat_pending)
+        self.until(lambda: not self.client.streaming and not self.client.pending)
         self.assertIn("模拟连接中断", self.pet.input_status.text())
         self.send("[test:slow]")
-        self.until(lambda: self.client.active is not None)
-        self.client.cancel()
-        self.until(lambda: self.client.active is None)
-        self.assertFalse(self.pet.bubble.streaming)
+        self.until(lambda: self.client.streaming)
         self.send("一")
         self.send("二")
         self.send("三")
-        self.until(lambda: not self.client.active and not self.client.chat_pending and not self.client.queue)
+        self.until(lambda: not self.client.streaming and not self.client.pending)
         self.assertIn("一 / 二 / 三", self.pet.bubble.content)
 
     def test_compact_oval_grows_and_has_no_task_stop_controls(self):
@@ -171,10 +173,27 @@ class ChatUITests(unittest.TestCase):
         self.until(lambda: len(self.pet.bubble.content) >= 20)
         bubble = self.pet.bubble
         self.assertTrue(bubble.streaming)
-        self.assertIsNotNone(self.client.active)
+        self.assertTrue(self.client.streaming)
         self.assertEqual(bubble.text.toPlainText(), bubble.content)
         self.assertTrue(bubble.text.isVisible())
         before = bubble.content
         self.assertFalse(bubble.grab().isNull())
         self.until(lambda: len(bubble.content) > len(before))
         self.assertTrue(bubble.streaming, 'Rendering must not wait for chat/completed')
+
+    def test_frontend_only_sends_text_and_receives_display_messages(self):
+        import json
+        from unittest.mock import patch
+        with patch.object(self.client.process, "write", wraps=self.client.process.write) as write:
+            self.send("[test:slow]")
+            self.until(lambda: self.client.streaming)
+            self.send("突然想聊别的")
+            self.send("再补一句")
+            self.until(lambda: not self.client.streaming and not self.client.pending)
+            self.send("说完之后再聊")
+            self.until(lambda: not self.client.streaming and not self.client.pending)
+        requests = [json.loads(bytes(call.args[0])) for call in write.call_args_list]
+        self.assertEqual(len(requests), 4)
+        self.assertTrue(all(r["method"] == "chat/send" and set(r["params"]) == {"text"} for r in requests))
+        self.assertIn("说完之后再聊", self.pet.bubble.content)
+        self.assertFalse(hasattr(self.client, "cancel"))

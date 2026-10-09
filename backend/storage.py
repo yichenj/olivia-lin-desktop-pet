@@ -1,9 +1,12 @@
-"""SQLite history. All access belongs to the backend event-loop thread."""
+"""Agent-owned SQLite history; accessed only by the backend event-loop thread."""
 from datetime import datetime, timezone
 import fcntl
+import json
 from pathlib import Path
 import sqlite3
 import uuid
+
+MAIN_AGENT_ID = 1
 
 
 def now():
@@ -29,88 +32,126 @@ class HistoryStore:
             self.db.row_factory = sqlite3.Row
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA journal_mode=WAL")
-            version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
-                raise RuntimeError("unsupported_history_version")
-            self.db.executescript('''
-                CREATE TABLE IF NOT EXISTS chat_runs (
-                    id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL CHECK(status IN ('running','completed','failed','interrupted')),
-                    generation INTEGER NOT NULL,
-                    model TEXT NOT NULL,
+            self.db.executescript('''BEGIN IMMEDIATE;
+                CREATE TABLE IF NOT EXISTS agents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    parent_agent_id INTEGER REFERENCES agents(id),
+                    source_message_id TEXT REFERENCES messages(id),
+                    status TEXT NOT NULL DEFAULT 'idle' CHECK(status IN
+                        ('idle','queued','running','waiting','cancelling','cancelled','completed','failed','interrupted')),
+                    generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    finished_at TEXT,
-                    error_code TEXT,
-                    usage_json TEXT
+                    CHECK ((id = 1 AND parent_agent_id IS NULL) OR
+                           (id > 1 AND parent_agent_id IS NOT NULL AND parent_agent_id < id))
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
                     id TEXT NOT NULL UNIQUE,
-                    chat_id TEXT NOT NULL REFERENCES chat_runs(id),
-                    generation INTEGER NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    generation INTEGER,
+                    role TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
                     content TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN
                         ('completed','streaming','superseded','failed','interrupted')),
+                    source_message_id TEXT REFERENCES messages(id),
+                    model TEXT,
+                    error_code TEXT,
+                    usage_json TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    CHECK ((role = 'user' AND generation IS NULL) OR
+                           (role = 'assistant' AND generation IS NOT NULL AND generation > 0) OR
+                           (role = 'tool' AND (generation IS NULL OR generation > 0)))
                 );
-                CREATE INDEX IF NOT EXISTS messages_chat ON messages(chat_id, seq);
-                PRAGMA user_version=1;
+                CREATE INDEX IF NOT EXISTS messages_agent ON messages(agent_id, seq);
+                COMMIT;
             ''')
             with self.db:
-                self.db.execute("UPDATE messages SET status='interrupted', updated_at=? WHERE status='streaming'", (now(),))
-                self.db.execute("UPDATE chat_runs SET status='interrupted', error_code='process_exit', updated_at=?, finished_at=? WHERE status='running'", (now(), now()))
+                self.db.execute("INSERT OR IGNORE INTO agents(id,created_at,updated_at) VALUES(1,?,?)", (now(), now()))
+                self.db.execute("UPDATE messages SET status='interrupted', error_code='process_exit', updated_at=? WHERE status='streaming'", (now(),))
+                self.db.execute("UPDATE agents SET status='interrupted', updated_at=? WHERE status='running'", (now(),))
         except Exception:
             if hasattr(self, "db"):
                 self.db.close()
             self.lock.close()
             raise
 
-    def _message(self, chat_id, generation, role, text, status):
+    def get_agent(self, agent_id=MAIN_AGENT_ID):
+        row = self.db.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown_agent")
+        return dict(row)
+
+    def create_agent(self, parent_agent_id=MAIN_AGENT_ID, source_message_id=None):
+        """Create a history owner, not a running subagent or scheduler."""
+        with self.db:
+            self.get_agent(parent_agent_id)
+            cursor = self.db.execute(
+                "INSERT INTO agents(parent_agent_id,source_message_id,created_at,updated_at) VALUES(?,?,?,?)",
+                (parent_agent_id, source_message_id, now(), now()))
+        return cursor.lastrowid
+
+    def _message(self, agent_id, generation, role, text, status, model=None):
         message_id = uid()
-        self.db.execute("INSERT INTO messages(id,chat_id,generation,role,content,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                        (message_id, chat_id, generation, role, text, status, now(), now()))
+        self.db.execute("INSERT INTO messages(id,agent_id,generation,role,content,status,model,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (message_id, agent_id, generation, role, text, status, model, now(), now()))
         return message_id
 
-    def begin(self, text, model):
-        chat_id = uid()
-        with self.db:
-            self.db.execute("INSERT INTO chat_runs(id,status,generation,model,created_at,updated_at) VALUES(?,'running',1,?,?,?)",
-                            (chat_id, model, now(), now()))
-            self._message(chat_id, 1, "user", text, "completed")
-            message_id = self._message(chat_id, 1, "assistant", "", "streaming")
-        return chat_id, message_id
+    def _begin(self, agent_id, text, model):
+        agent = self.get_agent(agent_id)
+        generation = agent["generation"] + 1
+        self.db.execute("UPDATE agents SET generation=?,status='running',updated_at=? WHERE id=?",
+                        (generation, now(), agent_id))
+        self._message(agent_id, None, "user", text, "completed")
+        message_id = self._message(agent_id, generation, "assistant", "", "streaming", model)
+        return generation, message_id
 
-    def steer(self, chat_id, generation, old_message_id, old_text, text):
+    def begin(self, text, model, agent_id=MAIN_AGENT_ID):
         with self.db:
-            self.db.execute("UPDATE messages SET content=?, status='superseded',updated_at=? WHERE id=?", (old_text, now(), old_message_id))
-            self.db.execute("UPDATE chat_runs SET generation=?, updated_at=? WHERE id=?", (generation, now(), chat_id))
-            self._message(chat_id, generation, "user", text, "completed")
-            return self._message(chat_id, generation, "assistant", "", "streaming")
+            if self.get_agent(agent_id)["status"] in ("running", "cancelling", "cancelled"):
+                raise ValueError("agent_unavailable")
+            return self._begin(agent_id, text, model)
+
+    def steer(self, agent_id, generation, old_message_id, old_text, text):
+        with self.db:
+            if self.get_agent(agent_id)["generation"] != generation:
+                raise ValueError("stale_generation")
+            row = self.db.execute("SELECT model FROM messages WHERE id=? AND agent_id=? AND generation=? AND status='streaming'",
+                                  (old_message_id, agent_id, generation)).fetchone()
+            if row is None:
+                raise ValueError("stale_generation")
+            self.db.execute("UPDATE messages SET content=?,status='superseded',updated_at=? WHERE id=?",
+                            (old_text, now(), old_message_id))
+            return self._begin(agent_id, text, row["model"])
 
     def checkpoint(self, message_id, text):
         with self.db:
             self.db.execute("UPDATE messages SET content=?,updated_at=? WHERE id=? AND status='streaming'", (text, now(), message_id))
 
-    def finish(self, chat_id, message_id, text, status, error_code=None, usage=None):
-        import json
+    def finish(self, agent_id, generation, message_id, text, status, error_code=None, usage=None):
+        if status not in ("completed", "failed", "interrupted"):
+            raise ValueError("invalid_completion_status")
         with self.db:
-            self.db.execute("UPDATE messages SET content=?,status=?,updated_at=? WHERE id=?", (text, status, now(), message_id))
-            self.db.execute("UPDATE chat_runs SET status=?,updated_at=?,finished_at=?,error_code=?,usage_json=? WHERE id=?",
-                            (status, now(), now(), error_code, json.dumps(usage) if usage else None, chat_id))
+            if self.get_agent(agent_id)["generation"] != generation:
+                return False
+            changed = self.db.execute(
+                "UPDATE messages SET content=?,status=?,error_code=?,usage_json=?,updated_at=? WHERE id=? AND agent_id=? AND generation=? AND status='streaming'",
+                (text, status, error_code, json.dumps(usage) if usage is not None else None, now(), message_id, agent_id, generation))
+            if not changed.rowcount:
+                return False
+            self.db.execute("UPDATE agents SET status=?,updated_at=? WHERE id=?",
+                            ("idle" if agent_id == MAIN_AGENT_ID else status, now(), agent_id))
+        return True
 
     def all_messages(self):
-        return [dict(row) for row in self.db.execute('''SELECT m.*, r.status AS run_status
-            FROM messages m JOIN chat_runs r ON r.id=m.chat_id ORDER BY m.seq''')]
+        return [dict(row) for row in self.db.execute("SELECT * FROM messages ORDER BY seq")]
 
-    def list_messages(self, before=None, limit=50):
-        rows = self.db.execute("SELECT * FROM messages WHERE seq < ? ORDER BY seq DESC LIMIT ?",
-                               (before if before is not None else 9223372036854775807, limit + 1)).fetchall()
-        # Bound each page by bytes too: long model replies must not overflow the
-        # client's frame buffer even when the caller requests 200 records.
-        import json
+    def list_messages(self, before=None, limit=50, agent_id=MAIN_AGENT_ID):
+        self.get_agent(agent_id)
+        rows = self.db.execute("SELECT * FROM messages WHERE agent_id=? AND seq < ? ORDER BY seq DESC LIMIT ?",
+                               (agent_id, before if before is not None else 9223372036854775807, limit + 1)).fetchall()
+        # Keep each page below the client's frame budget, including long replies.
         selected, size = [], 0
         for row in rows[:limit]:
             item = dict(row)
