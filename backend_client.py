@@ -1,4 +1,4 @@
-"""Qt transport and text rendering signals; no agent or generation control."""
+"""Qt transport and text rendering signals; no agent or turn control."""
 import json
 from pathlib import Path
 import sys
@@ -117,7 +117,7 @@ class BackendClient(QtCore.QObject):
             else:
                 self.current_message_id = None
                 self.chat_completed.emit(params)
-        # Only match the message being displayed. Backend owns generation fencing.
+        # Only match the message being displayed. Backend owns turn fencing.
 
     def _protocol_failure(self):
         self._lost("后台通信异常，请重新连接。")

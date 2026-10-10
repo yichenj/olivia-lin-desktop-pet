@@ -3,5 +3,7 @@
   "base_url": "",
   "model": "",
   "thinking": "disabled",
-  "bubble_seconds": 30
+  "bubble_seconds": 30,
+  "workspace": ".",
+  "shell_enabled": false
 }

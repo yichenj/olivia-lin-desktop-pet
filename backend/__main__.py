@@ -8,6 +8,8 @@ from .context import FullHistoryContextProvider
 from .harness import AgentHarness, ArkModel, MockModel
 from .service import ChatService, RpcError
 from .storage import HistoryStore
+from .runtime import AgentRuntime
+from .local_tools import LocalTools
 
 
 def emit(message):
@@ -26,11 +28,14 @@ async def serve():
     try:
         context = FullHistoryContextProvider(store, prompt)
         model = MockModel() if config.provider == "mock" else ArkModel(config)
-        service = ChatService(store, context, AgentHarness(context, model), config.model, emit)
+        harness = AgentHarness(context, model)
+        AgentRuntime(store, context, harness, LocalTools(config.workspace, config.shell_enabled, secrets=(config.api_key,)), config.model)
+        service = ChatService(store, context, harness, config.model, emit)
         reader = asyncio.StreamReader(limit=1024 * 1024)
         transport, _ = await asyncio.get_running_loop().connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)
         service.notify("backend/ready", {})
+        service.schedule_results()
         while line := await reader.readline():
             request = None
             try:

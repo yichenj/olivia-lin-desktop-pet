@@ -46,7 +46,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         terminals = [e for e in self.events if e.get("method") == "chat/completed"]
         self.assertEqual(len(terminals), 1)
         self.assertEqual(terminals[0]["params"]["messageId"], new.message_id)
-        # Accepted before reset; old generation emits no later fragments.
+        # Accepted before reset; old turn emits no later fragments.
         reset = next(i for i, e in enumerate(self.events) if e.get("method") == "chat/started" and e["params"]["messageId"] == new.message_id)
         self.assertFalse(any(e.get("params", {}).get("messageId") == old.message_id for e in self.events[reset:]))
 
@@ -74,7 +74,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
     async def test_restart_recovers_running_and_loads_completed_history(self):
         await self.request("chat/send", text="我叫小林")
         await self.service.active.task
-        generation, message_id = self.store.begin("还没回复", "mock")
+        turn, message_id = self.store.begin("还没回复", "mock")
         self.store.checkpoint(message_id, "未完")
         self.store.close()
         self.store = HistoryStore(self.path)
@@ -103,8 +103,8 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_large_history_pages_are_bounded_without_losing_records(self):
         for _ in range(4):
-            generation, message_id = self.store.begin("input", "mock")
-            self.store.finish(1, generation, message_id, "字" * 200000, "completed")
+            turn, message_id = self.store.begin("input", "mock")
+            self.store.finish(1, turn, message_id, "字" * 200000, "completed")
         import json
         before, collected = None, []
         while True:
@@ -137,7 +137,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         await current.task
         self.assertEqual(self.events[-1]['params']['text'], '第一句，第二句。')
 
-    async def test_generation_is_agent_scoped_and_survives_restart(self):
+    async def test_turn_is_agent_scoped_and_survives_restart(self):
         for expected in (1, 2):
             await self.request("chat/send", text="你好")
             self.assertEqual(self.service.active.agent_id, 1)
@@ -151,15 +151,15 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.service.active.number, 3)
         await self.service.active.task
         messages = self.store.all_messages()
-        self.assertTrue(all(m["generation"] is None for m in messages if m["role"] == "user"))
-        self.assertEqual([m["generation"] for m in messages if m["role"] == "assistant"], [1, 2, 3])
+        self.assertTrue(all(m["turn"] is None for m in messages if m["role"] == "user"))
+        self.assertEqual([m["turn"] for m in messages if m["role"] == "assistant"], [1, 2, 3])
 
-    async def test_new_input_is_text_only_and_old_generation_cannot_commit(self):
+    async def test_new_input_is_text_only_and_old_turn_cannot_commit(self):
         await self.request("chat/send", text="[test:slow]")
         old = self.service.active
         await self.request("chat/send", text="新内容")
         current = self.service.active
-        for params in ({"generation": True}, {"agentId": 2}, {"messageId": "not-a-target"}):
+        for params in ({"turn": True}, {"agentId": 2}, {"messageId": "not-a-target"}):
             with self.assertRaises(RpcError) as error:
                 await self.request("chat/send", text="错误目标", **params)
             self.assertEqual(error.exception.code, -32602)
@@ -170,6 +170,38 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.all_messages()[1]["status"], "superseded")
         await current.task
 
+    async def test_late_text_after_cancellation_is_discarded_without_restarting(self):
+        entered = asyncio.Event()
+        calls = []
+        observed_turns = []
+        store = self.store
+
+        class LateModel:
+            async def stream(self, messages):
+                calls.append(messages)
+                if len(calls) == 1:
+                    entered.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        observed_turns.append(store.get_agent(1)['turn'])
+                        yield StreamPiece(text='迟到的旧正文')
+                else:
+                    yield StreamPiece(text='新回复')
+
+        self.service.harness.model = LateModel()
+        await self.request('chat/send', text='旧输入')
+        previous = self.service.active
+        await asyncio.wait_for(entered.wait(), 1)
+        await self.request('chat/send', text='新输入')
+        current = self.service.active
+        await current.task
+        self.assertEqual(observed_turns, [2], 'New turn must be persisted before cancellation is awaited')
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.store.get_agent(1)['turn'], 2)
+        self.assertNotIn('迟到的旧正文', str(self.events))
+        self.assertEqual(next(m['status'] for m in self.store.all_messages() if m['id'] == previous.message_id), 'superseded')
+
     async def test_histories_are_isolated_by_agent_and_parent(self):
         await self.request("chat/send", text="主对话")
         await self.service.active.task
@@ -178,8 +210,8 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         nested = self.store.create_agent(parent_agent_id=child)
         self.assertEqual(self.store.get_agent(child)["parent_agent_id"], 1)
         self.assertEqual(self.store.get_agent(nested)["parent_agent_id"], child)
-        generation, message_id = self.store.begin("子任务资料", "mock", agent_id=child)
-        self.store.finish(child, generation, message_id, "子任务结果", "completed")
+        turn, message_id = self.store.begin("子任务资料", "mock", agent_id=child)
+        self.store.finish(child, turn, message_id, "子任务结果", "completed")
         self.context.refresh()
         main = self.context.build(1)
         sub = self.context.build(child)
@@ -187,14 +219,14 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m["content"] for m in sub][1:], ["子任务资料", "子任务结果"])
         self.assertTrue(all(m["agent_id"] == child for m in self.store.list_messages(agent_id=child)["messages"]))
         self.assertTrue(all(m["agent_id"] == 1 for m in self.store.list_messages()["messages"]))
-        self.assertEqual(self.store.get_agent(1)["generation"], 1)
-        self.assertEqual(self.store.get_agent(child)["generation"], 1)
+        self.assertEqual(self.store.get_agent(1)["turn"], 1)
+        self.assertEqual(self.store.get_agent(child)["turn"], 1)
 
     async def test_agent_tree_and_message_role_constraints(self):
         import sqlite3
         root = self.store.get_agent(1)
         self.assertIsNone(root["parent_agent_id"])
-        self.assertEqual(root["generation"], 0)
+        self.assertEqual(root["turn"], 0)
         await self.request("chat/send", text="保留原话")
         await self.service.active.task
         user, assistant = self.store.all_messages()
@@ -202,9 +234,9 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(sqlite3.IntegrityError), self.store.db:
             self.store.db.execute("UPDATE agents SET parent_agent_id=? WHERE id=1", (child,))
         with self.assertRaises(sqlite3.IntegrityError), self.store.db:
-            self.store.db.execute("UPDATE messages SET generation=1 WHERE id=?", (user["id"],))
+            self.store.db.execute("UPDATE messages SET turn=1 WHERE id=?", (user["id"],))
         with self.assertRaises(sqlite3.IntegrityError), self.store.db:
-            self.store.db.execute("UPDATE messages SET generation=NULL WHERE id=?", (assistant["id"],))
+            self.store.db.execute("UPDATE messages SET turn=NULL WHERE id=?", (assistant["id"],))
         self.assertIsNone(self.store.get_agent(1)["parent_agent_id"])
         self.assertEqual(self.store.get_agent(child)["parent_agent_id"], 1)
 
@@ -224,7 +256,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         for event in self.events:
             params = event.get("params", {})
             self.assertNotIn("agentId", params)
-            self.assertNotIn("generation", params)
+            self.assertNotIn("turn", params)
         users = [m["content"] for m in self.store.all_messages() if m["role"] == "user"]
         self.assertEqual(users, ["第一句", "第二句", "已经说完了，再聊一句"])
 

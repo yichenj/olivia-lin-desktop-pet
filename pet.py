@@ -179,7 +179,7 @@ class OliviaPet(QtWidgets.QWidget):
         self.input_status.setText("随时和 Olivia 聊聊" if ready else "聊天暂时未连接 · 右键可重新连接")
 
     def chat_started(self, event):
-        self.bubble.begin()
+        self.bubble.begin(gentle=event.get('presentation') == 'when_idle')
         self.input_status.setText("Olivia 正在想… 你可以继续说")
 
     def chat_completed(self, event):
@@ -201,7 +201,7 @@ class OliviaPet(QtWidgets.QWidget):
 
     def chat_disconnected(self, message):
         self.input_status.setText(message)
-        if self.bubble and self.bubble.streaming:
+        if self.bubble and (self.bubble.streaming or self.bubble.pending_display is not None):
             self.bubble.finish({"status": "interrupted", "error": {"message": message}})
 
     def retry_chat(self):

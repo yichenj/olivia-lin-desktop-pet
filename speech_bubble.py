@@ -18,6 +18,8 @@ class SpeechBubble(QtWidgets.QWidget):
         self.tail_right = True
         self.streaming = False
         self.dismissed = False
+        self.manually_dismissed = False
+        self.pending_display = None
         self.content = ""
         self.auto_hide_seconds = auto_hide_seconds
         self.remaining = float(auto_hide_seconds)
@@ -144,7 +146,10 @@ class SpeechBubble(QtWidgets.QWidget):
         self.update()
 
     def reveal(self):
+        if self.pending_display is not None:
+            self._show_pending(force=True)
         self.dismissed = False
+        self.manually_dismissed = False
         self.remaining = float(self.auto_hide_seconds)
         self.last_tick = time.monotonic()
         self.sync_visibility()
@@ -158,7 +163,11 @@ class SpeechBubble(QtWidgets.QWidget):
         else:
             self.hide()
 
-    def begin(self):
+    def begin(self, gentle=False):
+        if gentle and self.isVisible() and self.content and self.is_reading():
+            self.pending_display = {'content': '', 'completion': None}
+            return
+        self.pending_display = None
         self.streaming = True
         self.content = ""
         self.text.clear()
@@ -166,10 +175,16 @@ class SpeechBubble(QtWidgets.QWidget):
         self.text.setToolTip("")
         self.text.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._fit_content()
-        self.reveal()
+        if gentle and self.manually_dismissed:
+            self.sync_visibility()
+        else:
+            self.reveal()
 
     def append(self, text):
         if not text:
+            return
+        if self.pending_display is not None:
+            self.pending_display['content'] += text
             return
         self.content += text
         scrollbar = self.text.verticalScrollBar()
@@ -183,6 +198,9 @@ class SpeechBubble(QtWidgets.QWidget):
             scrollbar.setValue(scrollbar.maximum())
 
     def finish(self, params):
+        if self.pending_display is not None:
+            self.pending_display['completion'] = params
+            return
         final = params.get("text", self.content)
         if final != self.content:
             self.content = final
@@ -199,14 +217,30 @@ class SpeechBubble(QtWidgets.QWidget):
         self.last_tick = time.monotonic()
         self.sync_visibility()
 
-    def dismiss(self):
+    def dismiss(self, manual=True):
         self.dismissed = True
+        self.manually_dismissed = manual
         self.hide()
+
+    def is_reading(self):
+        scrollbar = self.text.verticalScrollBar()
+        return (self.underMouse() or self.text.hasFocus() or self.text.textCursor().hasSelection()
+                or scrollbar.value() < scrollbar.maximum() - 3)
+
+    def _show_pending(self, force=False):
+        pending = self.pending_display
+        self.pending_display = None
+        self.begin(gentle=not force)
+        self.append(pending['content'])
+        if pending['completion'] is not None:
+            self.finish(pending['completion'])
 
     def reading_activity(self):
         self.remaining = float(self.auto_hide_seconds)
 
     def tick(self):
+        if self.pending_display is not None and (not self.isVisible() or not self.is_reading()):
+            self._show_pending()
         now = time.monotonic()
         elapsed = now - self.last_tick
         self.last_tick = now
@@ -214,11 +248,9 @@ class SpeechBubble(QtWidgets.QWidget):
             self.update()
         if not self.isVisible() or self.streaming:
             return
-        scrollbar = self.text.verticalScrollBar()
-        reading = self.underMouse() or self.text.hasFocus() or self.text.textCursor().hasSelection() or scrollbar.value() < scrollbar.maximum() - 3
-        if reading:
+        if self.is_reading():
             self.remaining = float(self.auto_hide_seconds)
             return
         self.remaining -= elapsed
         if self.remaining <= 0:
-            self.dismiss()
+            self.dismiss(manual=False)

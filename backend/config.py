@@ -24,6 +24,8 @@ class Config:
     provider: str = "ark"
     thinking: str = "disabled"
     bubble_seconds: int = 30
+    workspace: Path = field(default_factory=lambda: ROOT)
+    shell_enabled: bool = False
 
 
 def load_config():
@@ -40,6 +42,9 @@ def load_config():
     thinking = str(get("ARK_THINKING", "thinking", "disabled"))
     if thinking not in ("disabled", "enabled", "auto"):
         raise ValueError("thinking must be disabled, enabled or auto")
+    shell_enabled = values.get('shell_enabled', False)
+    if type(shell_enabled) is not bool:
+        raise ValueError('shell_enabled must be boolean')
     return Config(
         api_key=str(get("ARK_API_KEY", "api_key", "")),
         base_url=str(get("ARK_BASE_URL", "base_url", defaults.base_url)),
@@ -49,4 +54,6 @@ def load_config():
         provider=str(get("OLIVIA_PROVIDER", "provider", "ark")),
         thinking=thinking,
         bubble_seconds=seconds,
+        workspace=(path.parent / Path(get('OLIVIA_WORKSPACE', 'workspace', ROOT)).expanduser()).resolve(),
+        shell_enabled=shell_enabled,
     )

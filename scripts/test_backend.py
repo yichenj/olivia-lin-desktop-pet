@@ -65,7 +65,7 @@ class BackendProbe:
     def completed(self, timeout=20):
         event = self.wait(lambda e: e.get("method") == "chat/completed", timeout)
         if event["params"]["status"] != "completed":
-            raise AssertionError(event["params"].get("error", {}).get("message", "Generation failed"))
+            raise AssertionError(event["params"].get("error", {}).get("message", "Turn failed"))
         return event["params"]
 
     def close(self):
@@ -95,7 +95,7 @@ def run(live=False):
             reply = probe.completed(180 if live else 20)
             assert reply["text"]
             assert any(e.get("method") == "chat/delta" for e in probe.events)
-            assert all("generation" not in e.get("params", {}) and "agentId" not in e.get("params", {}) for e in probe.events)
+            assert all("turn" not in e.get("params", {}) and "agentId" not in e.get("params", {}) for e in probe.events)
             print("PASS: backend ready, text-only sends, streamed reply" + (", continued input" if not live else " (live Ark)"))
         finally:
             probe.close()

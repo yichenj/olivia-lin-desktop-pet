@@ -77,3 +77,32 @@ class ArkModelTests(unittest.IsolatedAsyncioTestCase):
                     _ = [piece async for piece in ArkModel(config).stream([])]
                 constructor.assert_not_called()
                 self.assertIn(field, str(caught.exception))
+
+    async def test_fragmented_parallel_tool_calls_and_thinking_override(self):
+        def tool_chunk(index, call_id=None, name=None, arguments=None, finish=None):
+            delta = SimpleNamespace(index=index, id=call_id,
+                                    function=SimpleNamespace(name=name, arguments=arguments))
+            return SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=None, tool_calls=[delta]), finish_reason=finish)])
+        stream = FakeStream([
+            tool_chunk(0, 'call-a', 'create_subagent', '{"instructions":'),
+            tool_chunk(1, 'call-b', 'get_subagent', '{"agent_id":2}'),
+            tool_chunk(0, arguments='"整理"}', finish='tool_calls'),
+        ])
+        client = client_with(stream)
+        with patch('openai.AsyncOpenAI', return_value=client):
+            pieces = [p async for p in ArkModel(Config(api_key='placeholder', base_url='https://example.invalid', model='test')).stream(
+                [], tools=[{'type': 'function'}], thinking='enabled')]
+        self.assertEqual(len(pieces), 1)
+        self.assertEqual([c['id'] for c in pieces[0].tool_calls], ['call-a', 'call-b'])
+        self.assertEqual(pieces[0].tool_calls[0]['function']['arguments'], '{"instructions":"整理"}')
+        self.assertEqual(client.chat.completions.create.call_args.kwargs['extra_body']['thinking']['type'], 'enabled')
+        self.assertTrue(stream.closed)
+
+    async def test_incomplete_tool_arguments_never_escape_interrupted_stream(self):
+        delta = SimpleNamespace(index=0, id='call-a', function=SimpleNamespace(name='run_shell', arguments='{"command":'))
+        stream = FakeStream([SimpleNamespace(usage=None, choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None, tool_calls=[delta]), finish_reason=None)])])
+        client = client_with(stream)
+        with patch('openai.AsyncOpenAI', return_value=client), self.assertRaises(ModelError):
+            _ = [p async for p in ArkModel(Config(api_key='placeholder', base_url='https://example.invalid', model='test')).stream([])]

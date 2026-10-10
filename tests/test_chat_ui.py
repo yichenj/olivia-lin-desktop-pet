@@ -197,3 +197,30 @@ class ChatUITests(unittest.TestCase):
         self.assertTrue(all(r["method"] == "chat/send" and set(r["params"]) == {"text"} for r in requests))
         self.assertIn("说完之后再聊", self.pet.bubble.content)
         self.assertFalse(hasattr(self.client, "cancel"))
+
+    def test_gentle_result_respects_manual_close_and_queues_during_reading(self):
+        from unittest.mock import patch
+        bubble = self.pet.bubble
+        bubble.begin()
+        bubble.append('刚才的回复')
+        bubble.finish({'status': 'completed'})
+        bubble.dismiss()
+        self.pet.chat_started({'messageId': 'result', 'presentation': 'when_idle'})
+        bubble.append('后台完成了')
+        bubble.finish({'status': 'completed'})
+        self.assertFalse(bubble.isVisible())
+        self.assertEqual(bubble.content, '后台完成了')
+        bubble.reveal()
+        with patch.object(bubble, 'is_reading', return_value=True):
+            self.pet.chat_started({'messageId': 'next-result', 'presentation': 'when_idle'})
+            bubble.append('新结果')
+            bubble.finish({'status': 'completed', 'text': '新结果'})
+            bubble.tick()
+            self.assertEqual(bubble.content, '后台完成了')
+        with patch.object(bubble, 'is_reading', return_value=False):
+            bubble.tick()
+        self.assertEqual(bubble.content, '新结果')
+        self.assertFalse(bubble.streaming)
+        bubble.dismiss(manual=False)
+        self.pet.chat_started({'messageId': 'later-result', 'presentation': 'when_idle'})
+        self.assertTrue(bubble.isVisible(), 'Automatic collapse can be reopened by a result')
