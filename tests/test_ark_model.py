@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from openai import AuthenticationError
+from openai import AuthenticationError, BadRequestError
 from backend.config import Config
 from backend.harness import ArkModel, ModelError
 
@@ -77,6 +77,16 @@ class ArkModelTests(unittest.IsolatedAsyncioTestCase):
                     _ = [piece async for piece in ArkModel(config).stream([])]
                 constructor.assert_not_called()
                 self.assertIn(field, str(caught.exception))
+
+    async def test_context_overflow_is_classified_without_leaking_provider_body(self):
+        client = client_with(None)
+        response = httpx.Response(400, request=httpx.Request('POST', 'https://example.invalid/chat'))
+        client.chat.completions.create.side_effect = BadRequestError('PRIVATE_PROVIDER_TEXT', response=response,
+            body={'error': {'code': 'context_length_exceeded', 'message': 'PRIVATE_PROVIDER_TEXT'}})
+        with patch('openai.AsyncOpenAI', return_value=client), self.assertRaises(ModelError) as caught:
+            _ = [p async for p in ArkModel(Config(api_key='placeholder', base_url='https://example.invalid', model='test')).stream([])]
+        self.assertEqual(caught.exception.code, 'context_limit')
+        self.assertNotIn('PRIVATE_PROVIDER_TEXT', str(caught.exception))
 
     async def test_fragmented_parallel_tool_calls_and_thinking_override(self):
         def tool_chunk(index, call_id=None, name=None, arguments=None, finish=None):

@@ -1,14 +1,11 @@
 """Minimal streaming harness and a deterministic offline test provider."""
 import asyncio
+import json
+import time
 from contextlib import aclosing
 from dataclasses import dataclass
-from .context import ContextProvider
-
-
-class ModelError(Exception):
-    def __init__(self, code, message):
-        super().__init__(message)
-        self.code = code
+from .context import ContextProvider, NeedsCompaction
+from .errors import ModelError
 
 
 @dataclass
@@ -73,6 +70,10 @@ class ArkModel:
             raise ModelError("model_connection", "暂时连接不上模型，请检查网络后重试。") from None
         except APIStatusError as error:
             status = error.status_code
+            body = str(getattr(error, 'body', '')).lower()
+            if status in (400, 413) and any(code in body for code in
+                    ('context_length', 'context window', 'maximum context', 'max_tokens', 'input too long')):
+                raise ModelError('context_limit', '模型上下文超限，原始对话已保存。') from None
             if status in (401, 403):
                 message = "模型认证或访问权限失败，请检查 API Key 和接入点配置。"
             elif status == 429:
@@ -89,6 +90,20 @@ class ArkModel:
 
 class MockModel:
     async def stream(self, messages, **options):
+        if any(t['function']['name'] == 'write_memory' for t in options.get('tools', [])):
+            # Deterministic file compilation for offline wiring tests only.
+            if messages[-1]['role'] == 'tool':
+                yield StreamPiece(text='模拟记忆已保存。')
+                return
+            data = json.loads(messages[1]['content'])
+            page = 'events/' + data['raw'][0]['id'] + '.md'
+            content = '# 模拟记忆\n' + '\n'.join(
+                m['content'][:120] + f" [来源](raw:message/{m['id']})" for m in data['raw'])
+            edits = [(page, content), ('index.md', data['index'] + f'\n- [模拟对话]({page})')]
+            yield StreamPiece(tool_calls=[{'id': f'mock-memory-{i}', 'type': 'function', 'function': {
+                'name': 'write_memory', 'arguments': json.dumps({'path': path, 'content': text}, ensure_ascii=False)}}
+                for i, (path, text) in enumerate(edits)])
+            return
         users = [m["content"] for m in messages if m["role"] == "user"]
         latest = users[-1]
         if latest == "[test:error]":
@@ -104,36 +119,99 @@ class MockModel:
             yield StreamPiece(text=text[offset:offset + 6])
 
 
-class AgentHarness:
-    def __init__(self, context: ContextProvider, model):
-        self.context = context
-        self.model = model
+class AgentLoop:
+    def __init__(self, context: ContextProvider, model, *, compiler=None,
+                 token_budget=64000, active_timeout=300, memory_wait_timeout=370):
+        self.context, self.model, self.compiler = context, model, compiler
+        self.token_budget, self.active_timeout = token_budget, active_timeout
+        self.memory_wait_timeout = memory_wait_timeout
         self.runtime = None
 
+    def schedule_memory(self):
+        if self.compiler:
+            self.compiler.schedule()
+
     async def stream(self, agent_id, turn, *, trigger=None):
-        for _ in range(12):
-            if self.runtime and not self.runtime.valid(agent_id, turn):
-                raise asyncio.CancelledError()
-            messages = self.context.build(agent_id)
-            options = self.runtime.model_options(agent_id) if self.runtime else {}
-            if self.runtime:
-                messages = self.runtime.decorate(agent_id, messages, trigger=trigger)
-            calls = []
-            async with aclosing(self.model.stream(messages, **options)) as stream:
-                async for piece in stream:
+        deadline = time.monotonic() + (600 if agent_id != 1 else self.active_timeout)
+        waited = 0
+        budget = self.token_budget
+        retried = False
+        memory_snapshot = None
+        try:
+            for _ in range(12):
+                while True:
                     if self.runtime and not self.runtime.valid(agent_id, turn):
                         raise asyncio.CancelledError()
-                    if piece.tool_calls:
-                        calls.extend(piece.tool_calls)
-                    else:
-                        yield piece
-            if self.runtime and not self.runtime.valid(agent_id, turn):
-                raise asyncio.CancelledError()
-            if not calls:
-                return
-            if not self.runtime:
-                raise ModelError('tools_unavailable', '工具运行器未启用。')
-            for call in calls:
-                await self.runtime.execute(agent_id, turn, call)
-            self.context.refresh()
-        raise ModelError('tool_limit', '本次工具调用达到上限，工作尚未完整完成。')
+                    context = self.context.build(agent_id, token_budget=budget, turn=turn,
+                                                 trigger=trigger, memory_snapshot=memory_snapshot)
+                    if not isinstance(context, NeedsCompaction):
+                        break
+                    current_version = self.context.memory.snapshot().version if self.context.memory else None
+                    if memory_snapshot and memory_snapshot.version != current_version:
+                        # Background compilation may have finished since the last
+                        # model request. Adopt it before asking for more work.
+                        memory_snapshot = None
+                        continue
+                    if not self.compiler or waited >= self.memory_wait_timeout:
+                        raise ModelError('memory_timeout', '等待记忆整理超时，原始对话已保存。')
+                    started = time.monotonic()
+                    try:
+                        progressed = await asyncio.wait_for(self.compiler.wait(), self.memory_wait_timeout - waited)
+                    except asyncio.TimeoutError:
+                        raise ModelError('memory_timeout', '等待记忆整理超时，原始对话已保存。') from None
+                    elapsed = time.monotonic() - started
+                    deadline += elapsed
+                    waited += elapsed
+                    memory_snapshot = None
+                    if not progressed and self.context.memory.snapshot().version == current_version:
+                        raise ModelError('memory_no_progress', '记忆整理未取得进展，原始对话已保存。')
+                memory_snapshot = context.memory_snapshot
+                if self.runtime and agent_id == 1:
+                    self.runtime.observe(turn, context)
+                options = {'tools': context.tools} if context.tools else {}
+                if self.runtime:
+                    options['thinking'] = 'disabled' if agent_id == 1 else 'enabled'
+                calls, emitted = [], False
+                try:
+                    async with aclosing(self.model.stream(context.messages, **options)) as stream:
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise asyncio.TimeoutError()
+                            try:
+                                piece = await asyncio.wait_for(stream.__anext__(), remaining)
+                            except StopAsyncIteration:
+                                break
+                            if self.runtime and not self.runtime.valid(agent_id, turn):
+                                raise asyncio.CancelledError()
+                            if piece.tool_calls:
+                                calls.extend(piece.tool_calls)
+                            else:
+                                emitted = emitted or bool(piece.text)
+                                yield piece
+                except ModelError as error:
+                    if error.code == 'context_limit' and self.compiler and agent_id == 1 and not retried and not emitted:
+                        retried = True
+                        budget = int(budget * .75)
+                        memory_snapshot = None
+                        continue
+                    raise
+                if self.runtime and not self.runtime.valid(agent_id, turn):
+                    raise asyncio.CancelledError()
+                if not calls:
+                    return
+                if not self.runtime:
+                    raise ModelError('tools_unavailable', '工具运行器未启用。')
+                for call in calls:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    await asyncio.wait_for(self.runtime.execute(agent_id, turn, call), remaining)
+            raise ModelError('tool_limit', '本次工具调用达到上限，工作尚未完整完成。')
+        finally:
+            if self.runtime and agent_id == 1:
+                self.runtime.release_context(turn)
+
+    async def close(self):
+        if self.compiler:
+            await self.compiler.close()

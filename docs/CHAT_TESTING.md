@@ -1,181 +1,141 @@
-# 聊天运行与测试
+# 运行与验证
 
-更新：2026-10-10。
+本文面向运行应用和修改代码的贡献者，说明本地配置、测试入口及验证边界。系统职责见 [Agent 架构](AGENT_ARCHITECTURE.md)，接口与数据契约见 [通信协议](CHAT_PROTOCOL.md) 和 [历史与记忆](HISTORY_MEMORY.md)。
 
 ## 配置和启动
 
-macOS 执行 `./scripts/setup_macos.sh` 安装依赖，随后双击 `Start.command` 或运行 `./run.sh`。已有虚拟环境但缺少 OpenAI SDK 时，双击入口会重新执行安装。Linux 可在 Python 3.10+ 虚拟环境中执行 `pip install -r requirements.txt`，再运行 `./run.sh`。
+macOS 执行 `./scripts/setup_macos.sh` 安装依赖，随后双击 `Start.command` 或运行 `./run.sh`。已有虚拟环境但缺少 OpenAI SDK 时，双击入口会重新执行安装。Linux 可在 Python 3.10+ 虚拟环境中安装 `requirements.txt`，再运行 `./run.sh`。
 
-复制 `.olivia.example.json` 为被 Git 忽略的 `.olivia.local.json`，在本地填写 api_key、base_url 和 model 三个必填项。三者一起作为机器本地配置，支持双击启动；代码和示例文件不包含实际值。
+复制 `.olivia.example.json` 为被 Git 忽略的 `.olivia.local.json`，填写 api_key、base_url 和 model。三者均为必填，不使用内置服务地址或 endpoint；配置不完整时不会发起模型请求。不要提交本地配置。
 
-同一 shell 中的 ARK_API_KEY、ARK_BASE_URL、ARK_MODEL 可覆盖对应字段。未配置的字段不会回退到内置地址或模型；发送时会提示补全配置，并且不会发起模型请求。配置值不通过前端 JSON-RPC 发送，不要提交本地文件。
-
-其他配置：
-
-| 环境变量 | 本地 JSON 字段 | 默认 |
+| 环境变量 | 本地 JSON 字段 | 默认值或含义 |
 | --- | --- | --- |
 | `OLIVIA_CONFIG` | — | 项目根目录 `.olivia.local.json` |
-| `OLIVIA_DB_PATH` | `database` | 系统用户数据目录 `chat.sqlite3` |
+| `ARK_API_KEY` | `api_key` | 必填的模型服务凭据 |
+| `ARK_BASE_URL` | `base_url` | 必填的服务地址 |
+| `ARK_MODEL` | `model` | 必填的模型或 endpoint |
+| `OLIVIA_DB_PATH` | `database` | 系统用户数据目录中的 `chat.sqlite3` |
 | `OLIVIA_PROMPT_PATH` | `prompt` | `prompts/olivia.md` |
-| `OLIVIA_BUBBLE_SECONDS` | `bubble_seconds` | 30，允许 1–3600 秒 |
-| `ARK_THINKING` | `thinking` | 直接适配器调用的默认值；运行时主/子角色固定 disabled / enabled |
+| `OLIVIA_BUBBLE_SECONDS` | `bubble_seconds` | 30 秒，允许 1–3600 |
+| `ARK_THINKING` | `thinking` | 直接适配器调用的默认值；运行时按角色选择思考设置 |
 | `OLIVIA_WORKSPACE` | `workspace` | 项目目录；相对路径基于配置文件目录 |
-| — | `shell_enabled` | false；本机用户已选择开启任意 shell |
-| `OLIVIA_PROVIDER` | `provider` | `ark`；`mock` 仅用于离线测试 |
+| — | `shell_enabled` | false；显式开启后允许子 agent 执行任意 shell |
+| `OLIVIA_PROVIDER` | `provider` | `ark`；`mock` 用于离线测试 |
+| — | `context_token_budget` | 64000，允许 8000–1000000 |
+| — | `memory_interval_seconds` | 60 秒，允许 1–3600 |
+| — | `memory_threshold_bytes` | 16000，允许 1000–1000000 |
+| — | `memory_recent_messages` | 12 条，允许 1–100 |
 
-本地 shell 按当前用户权限执行，不是沙箱；文件工具限制在 workspace，shell 不受此目录边界限制。命令默认 60 秒时限，输出最多 64 KiB；每个 agent 的一次 turn 最多 12 次模型调用，主/子总时限分别为 300/600 秒。
+环境变量覆盖对应本地字段，不回写配置。主 agent 固定关闭思考，业务子 agent 和记忆加工开启思考。
 
-当前存储直接采用 turn 结构，没有旧结构兼容或迁移。已有开发历史请先自行备份，通过 database 或 OLIVIA_DB_PATH 选择新的 SQLite 文件；程序不会自动清空旧库。
+文件工具将路径限制在 workspace 内，shell 使用当前用户权限，不受该目录边界限制。开启 shell 不会建立 OS 沙箱或命令审批流程。
 
-不需要单独启动 backend；桌宠负责启动和退出。第二个桌宠实例不能同时使用同一历史库，测试时应始终指定临时数据库。
+### 数据位置与开发环境
 
-## 交互
+macOS 默认数据库位于 `~/Library/Application Support/Olivia Lin Fan Pet/chat.sqlite3`；Linux 位于 `${XDG_DATA_HOME:-~/.local/share}/olivia-desktop-pet/chat.sqlite3`。记忆目录为数据库旁的 `<数据库文件名>.memory/`，由 CURRENT 指向完整发布版本。
 
-- 输入后 Enter 或箭头发送。回复以文字流显示在人物旁边的气泡里。
-- 随时继续发送，包括完全不同的话题：前端始终只发送 text；backend 接收后自行调整未完回复。被替换草稿留在内部历史中并标记 superseded。
-- 椭圆气泡随文字增长，短句保持紧凑，只有达到最大尺寸后才滚动。支持选中复制，正在阅读时暂停自动收起；完成后闲置 30 秒收起。卡片“对话”入口和右键“关闭对话 / 展开对话”统一切换显示。
-- 气泡和右键菜单不提供停止按钮。用户通过继续说话来补充或修正；收起气泡和隐藏人物只改变显示。气泡不放关闭叉号，关闭/展开合并到右键菜单和卡片“对话”入口。
-- 失败可通过右键“重试上次聊天”把上一条输入填回输入框，编辑后再发送；后台退出时用“重新连接聊天后台”。
+原始历史始终保留，旧记忆版本暂不自动清理。备份应在 backend 停止后同时保存数据库和记忆目录，保持二者绑定。不要直接编辑已发布版本，文件校验失败会阻止加载。
 
-## 自动化回归
+同一数据库只允许一个 backend 写入。开发与测试使用独立临时数据库，不连接正式历史。项目不提供旧结构迁移；遇到不兼容的开发库，应先备份再选择新路径，程序不会自动清空历史。
+
+### 容量与超时
+
+| 范围 | 限制 |
+| --- | --- |
+| 一次 agent turn | 最多 12 次模型调用；主/子执行时限分别为 300/600 秒 |
+| 主对话容量等待 | 每轮累计最多 370 秒，与执行时限分开 |
+| 记忆加工 | 每批目标 16000 字节，每次最多 16 次模型调用、180 秒，最多尝试 2 次 |
+| 加工触发 | 有积压时按 memory_interval_seconds 定时；达到 memory_threshold_bytes 提前触发；失败后至少间隔 60 秒后台重试 |
+| 页面容量 | 普通页最多 16000 字节，hot.md 和根 index.md 各最多 6000 字节，最多 1000 个 Markdown 文件 |
+| 原文读取 | 单次最多 20 条、24000 字节；每轮记忆读取累计最多 32000 字节 |
+| shell | 默认 60 秒时限，输出最多 64 KiB |
+
+context_token_budget 包含 messages 和 tools，使用序列化 JSON 的 UTF-8 字节数作保守估算，不是模型精确 token 数。配置时需为上游输出和协议开销留余量。近期已加工窗口可缩小，未加工的有效对话不会因预算不足而静默丢弃。
+
+## 自动化测试
+
+在项目根目录运行完整离屏回归：
 
 ```bash
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 ```
 
-包含原有姿势/眨眼/输入/启动器回归，以及：
+按修改范围也可以运行专项入口：
 
-- agents / messages 归属、父子关系约束、用户 turn 为空、按 agent 分页与上下文隔离；
-- SQLite 事务状态、检查点、启动恢复、独占锁；跨回复与重启的 turn 单调递增；
-- 连续 chat/send、旧草稿排除、用户原话保留、退出中断；完成前后发送使用同一契约；
-- 真实子进程 JSONL 通信、错误请求、通知无需响应、重启恢复；
-- QProcess + 模拟模型 + SQLite + 气泡全链路；旧展示消息片段过滤、连续发送、长文滚动、收起/展开、边缘位置、崩溃重连。
+```bash
+# 真实 backend 子进程、模拟模型和临时 SQLite
+.venv/bin/python scripts/test_backend.py
 
-原生 macOS 桌面验证：
+# 子 agent、工具历史、结果回流与 timer
+.venv/bin/python scripts/test_agents.py
+
+# 记忆加工、发布恢复、上下文容量与并发输入
+.venv/bin/python scripts/test_memory.py
+```
+
+| 测试位置 | 主要覆盖 |
+| --- | --- |
+| `tests/test_agent_history.py`、`test_agent_tool_messages.py` | agent 归属、turn、事务、工具配对、稳定键与未知结果 |
+| `tests/test_agent_runtime.py`、`test_agent_result_timer.py` | 委派、补充、取消、后台执行、主动回流、暂缓与输入竞争 |
+| `tests/test_memory.py` | 增量内存视图、提炼范围、固定批次、文件版本、约定、按需读取和容量等待 |
+| `tests/test_backend.py`、`test_backend_transport.py` | 连续输入、JSONL、流式通知、进程退出与重启 |
+| `tests/test_ark_model.py`、`test_config.py` | 模型流解析、错误分类、工具调用和配置校验 |
+| `tests/test_chat_ui.py` | QProcess 到气泡的离屏链路、迟到片段、阅读、隐藏与展开 |
+| `tests/test_pet_interactions.py`、`test_mac_hotkey.py`、`test_launcher.py` | 人物交互、快捷键和启动器 |
+
+确定性测试使用可控模型决定工具选择和竞争时序；文件、进程和数据库按各测试实际执行。它们验证调度与契约，不测量模型理解自然语言的准确率。
+
+## 真实模型冒烟
+
+以下命令使用本地模型配置发起真实请求，只构造合成对话和临时历史，不读取正式聊天数据库：
+
+```bash
+# 两轮短对话，中间重启 backend
+.venv/bin/python scripts/test_backend.py --live
+
+# 委派本地工作，执行中追加闲聊，等待结果报告
+.venv/bin/python scripts/test_agents.py --live
+
+# 委派后不再输入，验证后台结果主动唤醒
+.venv/bin/python scripts/test_agents.py --live --no-followup
+
+# 加工 Markdown，重新加载，按页查阅并核对 raw
+.venv/bin/python scripts/test_memory.py --live
+```
+
+agent 冒烟在临时目录执行真实 shell 并检查文件产物、子执行状态、结果投递和流式输出。记忆冒烟检查带来源的页面、磁盘重载、read_memory / read_raw 调用以及回答正确性。脚本输出通过/失败信息，不打印 API key 或完整模型请求。
+
+## 原生 UI 与预览
+
+原生 macOS 验证需要能够访问 WindowServer 的本地终端：
 
 ```bash
 QT_QPA_PLATFORM=cocoa .venv/bin/python -m unittest discover -s tests -v
-```
-
-原生测试还覆盖 macOS 快捷键注册/冲突/释放。需要能够访问 macOS 窗口服务的本地终端，受限沙箱里无法连接 WindowServer 的失败不代表应用逻辑失败。
-
-## Backend 总体测试脚本
-
-```bash
-# 离线：真实 backend 子进程 + 模拟模型
-.venv/bin/python scripts/test_backend.py
-
-# 真实 Ark：两轮短测试，第二轮在重启 backend 后验证上下文
-.venv/bin/python scripts/test_backend.py --live
-```
-
-脚本始终使用临时数据库；`--live` 才使用配置的 Key 发起真实请求。不读取或上传正式聊天历史，输出通过/失败结果，不打印 Key 或完整模型请求。
-
-## 带 UI 联合冒烟与预览
-
-```bash
 QT_QPA_PLATFORM=cocoa .venv/bin/python scripts/test_chat_ui.py
 QT_QPA_PLATFORM=cocoa .venv/bin/python scripts/test_chat_ui.py --live
 ```
 
-脚本打开测试人物窗口，在首段输出后自动追加输入，验证重新生成和完成，保存人物与气泡的应用内渲染预览，然后关闭窗口。默认输出到 `output/previews/chat.png`，可用 `--output PATH` 更改。该预览组合的是应用控件，不截取桌面上的其他应用。
+原生测试包含快捷键注册、冲突与释放。受限环境无法连接窗口服务时，不能把环境失败解释为应用行为失败，也不能以离屏通过替代原生验证。
 
-## 前置历史/协议验证记录（2026-10-09）
+UI 冒烟打开测试人物窗口，在首段正文后追加输入，检查重新生成和完成，再保存应用控件渲染预览。默认路径为 `output/previews/chat.png`，可用 `--output PATH` 修改；它不截取其他桌面应用。
 
-本次持续对话协议与 agent 历史的离屏回归：51 项，49 通过，2 项原生 macOS 快捷键测试按环境跳过。测试包含真实 backend 子进程和 QProcess + SQLite + 气泡链路；模型使用确定性的 MockModel，不调用外部服务。
+手工检查应覆盖：生成期间持续输入、短句气泡紧凑、长文达到上限后滚动、阅读期间不抢占内容、手动关闭后后台结果不重新展开，以及人物素材和几何保持稳定。
 
-已验证：主 agent 固定为 1、父子关系与消息角色约束、各 agent 历史隔离、跨回复/重启 turn 递增、用户消息 turn 为 NULL、前端发送只有 text、输出不含 agent ID/turn、生成中与完成后的输入均能受理、旧展示消息的迟到片段过滤、流式完成前正文可见，以及原有气泡与人物交互回归。
+## 验证覆盖与边界
 
-本地模型配置覆盖：api_key、base_url 和 model 从同一文件读取，环境变量可覆盖且不回写文件；缺少配置时没有内置连接值，不创建模型客户端。
+已有离屏回归覆盖文本唯一入口、流式展示、主子历史隔离、单调 turn、操作去重、结果恢复和记忆读写闭环。真实 backend 子进程、Qt 离屏集成和临时数据库重启均有测试入口。
 
-本次没有重跑原生窗口服务或真实 Ark 联测；模型 API 适配、人物素材和气泡几何未改变，人物输入回调只做统一发送与文本恢复。数据库创建从空库开始，没有迁移或兼容路径。该轮记录不包含后来加入的 subagent 调度、后台工具和主动发言；新记录见下方。
+记忆回归专门覆盖事务回滚不污染内存、晚完成消息不遗漏、固定批次期间继续输入、前台取消不取消共享加工、后台加工不占业务槽、只恢复最新有效轮次，以及指针切换前后失败时的版本一致性。纠正与停用验证指定来源不从旧快照、工具返回或后续加工中复活，原文仍保留。
 
-## 上游流式与原生 UI 参考记录（2026-10-08）
+已有真实模型样本通过委派与并行接话、无后续输入的主动结果报告，以及文件记忆加工、重载、查页、原文核对和流式回答。这些是链路冒烟，不能据此推断复杂场景质量：
 
-此前使用合成输入和临时数据库完成真实 Ark backend、原生 Qt 流式/steer 联测。真实 SSE 对照样本：相同短消息和 endpoint，默认思考模式首正文约 24.83 秒，关闭思考后约 2.89 秒。该记录只说明关闭思考对首正文延迟的影响，不能作为固定延迟承诺，也不替代当前实现的原生复测。
+| 尚需专门验证的范围 | 现有证据的边界 |
+| --- | --- |
+| 补充、撤回和多目标指代的语义准确率 | 可控模型验证运行时行为，真实样本未形成系统评测 |
+| 长期事实修订、矛盾消解和跨页关联 | 单次合成记忆召回通过，尚无多主题长期质量数据 |
+| 大规模积压的延迟、调用成本与 token 使用 | 有容量和等待边界测试，没有规模化基准 |
+| 文件系统断电耐久性 | 发布异常注入及协程取消已有覆盖，未做真实断电实验 |
+| 外部动作的崩溃一致性 | 调用凭据保留未知结果，不提供跨进程外部副作用 exactly-once 保证 |
+| 原生桌面和全局快捷键 | 需要原生环境测试，离屏执行会跳过相关项目 |
 
-关闭思考的原生 Qt 样本：首次输入约 3.83 秒到首正文，补充后的生成约 2.67 秒到首正文，收到 288 条增量后完成；流式期间气泡已显示内容。认证信息与内部思考内容未写入记录。
-
-`scripts/render_bubble_previews.py` 可离线输出等待、短句、中段和长文的应用预览，不调用模型。尚未实测 Linux 原生桌面、多显示器热插拔、跨 Space / 全屏及接近上游上下文上限的超长历史。
-
-## Subagent 首版验证（2026-10-09）
-
-```bash
-# 独立调度/本地执行回归（模型为可控测试替身，文件和进程真实执行）
-.venv/bin/python scripts/test_agents.py
-
-# 真实 Ark + JSONL backend + shell，仅使用合成对话、临时目录与临时历史
-.venv/bin/python scripts/test_agents.py --live
-```
-
-新增覆盖：独立前后台调用、闲聊不进入子上下文、补充复用 agent 并使旧结果失效、受理后替换草稿不重复创建、运行/排队取消、已完成动作不回滚、进程组终止、命令超时/输出上限、完整工具历史重放、未知动作凭据不自动重试、失败回流、结果持久化、结果回复被新输入替换后继续投递、重启中断通知去重，以及无正文暂缓后定时再唤醒。
-
-UI 新增验证手动关闭不被主动结果重新打开、阅读时暂存新文字、阅读结束后展示、正常自动收起允许后续结果再显示。人物素材与几何没有修改。
-
-测试替身只用于控制工具选择和竞争时序；不能据此宣称真实模型对补充、撤回、多个候选指代的理解准确率。任意 shell 的业务授权目前依靠交接与模型遵循，没有 OS 沙箱或命令审批 UI。脱离进程组的命令、跨进程崩溃时的外部副作用核对、超长历史仍需进一步验证。
-
-本轮真实 Ark 验证通过：真实 JSONL backend 受理委派；子 agent 运行 shell 并在临时目录创建指定内容的文件；发送第二条闲聊时后台仍处于 running/queued；只有一个子 agent；结果事件由主 agent 报告；正文经 SSE/JSONL 返回。受限网络环境首次连接失败，允许网络访问后通过。没有读取正式聊天历史，也没有操作测试目录之外的业务文件。
-
-此真实样本覆盖创建、并行接话、执行和报告；补充、撤回、多个目标的指代理解与长时间使用质量尚未做真实模型场景评测。原生 macOS 桌面本轮未重测；气泡行为由 Qt 离屏回归覆盖。
-
-最终离屏全量回归：68 项，66 通过，2 项原生 macOS 快捷键测试按环境跳过；随后对执行清理的修正重新通过全部 14 项 subagent/本地执行回归。
-
-## 主 agent 查询完整子历史（2026-10-09）
-
-get_subagent 已扩展为按需读取全部已存子历史及在途调用。新增 5 项测试覆盖跨 turn/全状态消息、完整工具 payload、超过默认分页大小仍无遗漏、父子访问范围、在途与未知结果区分及重启后未知凭据保留。通过真实 shell 输出和非零退出码，配合可控主模型验证查询结果进入主对话并据此回答；查询不改变子 agent 状态或 turn。
-
-`.venv/bin/python scripts/test_agents.py` 已包含历史查询回归，共 19 项全部通过。本次未另做真实模型的进展问答联测；全量 UI/协议及上一轮真实委派联测记录见上文。
-
-## Subagent 工具命名统一（2026-10-10）
-
-协调工具统一为 create_subagent、steer_subagent、stop_subagent、get_subagent；不存在独立 task 身份，也不保留旧工具名别名。运行时分发、提示词、模型测试和设计文档已同步。19 项 subagent/历史查询回归全部通过；handle_subagent_results 的结果报告、暂缓和抑制行为本轮未改变。
-
-## Subagent 结果工具命名与暂缓恢复（2026-10-10）
-
-结果控制工具统一为 handle_subagent_results，保留 report / defer / suppress 行为。新增回归确认 defer 后正文仍属于原 subagent、事件保持 pending、available_at 和来源引用在重启后不变，以及未到期时不会发起主动回复。20 项 subagent/历史/结果回流回归全部通过；到期重新评估的原有测试同时通过。
-
-## Timer 显式取消与提前询问（2026-10-10）
-
-实现及完整时序见 [结果暂缓与 Timer 方案](AGENT_ARCHITECTURE.md#51-subagent-结果暂缓timer-与提前询问)。本轮补齐输入受理、无剩余 pending 和退出时取消并清空 TimerHandle；前台忙碌时不创建新 timer，回复结束后按剩余事件重排。已到期事件的 30/60 秒重试不会拖后其他未来事件更早的期限。
-
-新增 7 项回归覆盖提前报告时取消 timer 且等回复提交才消费事件、无关输入保留绝对期限、失败保留结果并恢复 timer、只报告部分结果后转向剩余事件、没有 pending 时取消 timer、无效输入不改变预约、timer 先到后用户输入只替换主回复。全量离屏回归共 81 项，79 通过，2 项原生 macOS 快捷键测试按环境跳过。本次未另做真实模型时机判断或原生桌面联测。
-
-## Turn 统一与过期输出隔离（2026-10-10）
-
-Agent 计数、消息归属轮次、结果来源、在途工具记录、内部错误和测试统一使用 turn；没有兼容别名或数据库迁移。完整机制见 [Agent 架构 §3.5](AGENT_ARCHITECTURE.md#35-turn每个-agent-独立的处理轮次)，结果暂缓、Timer 和提前询问方案已合并到该文档 §5.1；存储事务见 [历史与记忆](HISTORY_MEMORY.md#turn-的存储与事务)。
-
-新输入先持久化新 turn 并替换旧草稿，再取消旧请求。Harness 始终使用启动时传入的 turn，校验迟到流片段和新工具调用；旧 turn 直接退出，不自行重新触发。Timer 只有在主 agent 空闲且仍有到期事件时才推进主 turn；创建、取消预约或忙碌回调都不推进。
-
-新增 8 项回归覆盖：忙碌时到期事件留存及结束后唤醒、无到期结果不增 turn、旧回复不能提交投递决定、不遵守取消的模型迟到正文/工具调用被丢弃、多次模型请求和真实工具调用共用一个 turn、排队补充只在受理时计数且凭据重放/启动/停止不重复计数、迟到外部操作结果留在原 turn 而不继续执行。
-
-全量离屏回归 89 项，87 通过，2 项原生 macOS 快捷键测试按环境跳过。包含 34 项 subagent/历史/本地执行/timer 回归，全部通过；Qt 离屏、真实 backend JSONL 子进程和当前结构数据库重启恢复也通过。原生桌面未在本轮重测。旧名称扫描、文档本地链接与章节锚点校验、git diff --check 均通过。
-
-本轮真实 Ark 冒烟也通过：委派后子 agent 实际执行 shell 并创建指定内容的临时文件；第二条闲聊受理时后台仍在执行；主 agent 流式报告，结果投递状态持久化，前端不接触 turn。首次受限网络连接失败，取得网络访问后重跑通过。此样本不代表补充/撤回语义识别或长期调度质量评测；并发边界由可控模型回归覆盖。
-
-## 工具消息承接操作凭据（2026-10-10）
-
-移除独立操作表，首次调用消息保存唯一 operation_key，工具结果通过 tool_call_message_id 外键关联原调用。主控制的调用、子状态变更、结果在同一事务提交；外部动作先提交调用、返回后提交结果。查询直接从消息关联派生状态，未知结果不补造 tool 返回；新结构不提供兼容迁移。
-
-原有在途/重启/去重测试已改为验证消息记录，新增 4 项测试：已知结果跨重启重放且同键异参/异工具拒绝；真实 shell 写文件后进程在结果落库前强制退出，恢复后保留未知调用且拒绝自动重做；跨 steer 的迟到结果在模型上下文中正确配对；控制结果保存失败时，调用、子状态变更一起回滚。
-
-39 项 agent 回归全部通过；全量离屏 94 项，92 通过，2 项原生 macOS 快捷键测试按环境跳过。临时数据库核对确认仅保留 agents、messages、message_payloads、result_events 四张业务表，消息关联及 UML 一致；文档链接、章节锚点及 git diff --check 通过。原生桌面未在本轮重测。
-
-本轮真实模型测试暴露 report(delay_seconds=0) 被旧参数校验拒绝，导致结果仍为 pending。已明确动作语义：defer 仍须 1–300 秒；report/suppress 可填 0，运行时不应用延迟。新增回归验证前两种立即处理可成功提交，defer(0) 被拒绝且事件保留。
-
-修正后的真实模型冒烟重跑通过：委派、临时目录中的真实 shell/文件执行、执行期间继续闲聊、主 agent 流式转述和 report 持久化均通过。首次运行因零延迟参数被拒绝而在投递期限内失败，不能算作通过；通过记录对应修正后的重新运行。语义路由与长期使用质量仍不由单次冒烟保证。
-
-## 主动唤醒来源与错误机制解释（2026-10-10）
-
-针对“后台完成后似乎等下一句话才报告”的反馈，核对本地消息时间、superseded 草稿和结果事件：结果完成后已立即启动主动主 turn，用户在首正文前发来的新输入替换了该 turn；另有无新输入时完成的主动报告。模型随后声称“默认等下一句话”的解释没有记录依据。此排查不等于确认某条气泡已展示或用户已读。
-
-主模型上下文新增 turn_trigger=user_input/subagent_results，由 ChatService 传入并在同一轮工具循环中保持；明确后台结果无需新输入即可唤醒，模型不得编造等待策略、展示状态或设置变更。调度优先级保持原方案，用户新输入仍可替换主动回复。
-
-新增真实 timer 回归：没有任何新用户输入时，调用 timer 后等待其自然到期，由主模型处理工具决定、流式输出并提交 report。原有竞争测试同时验证结果触发被用户输入替换后，来源从 subagent_results 切换为 user_input。全量离屏 95 项，93 通过、2 项原生环境测试跳过。
-
-可用以下真实模型场景检查“委派后不再说话”的完整链路，仅操作临时目录：
-
-```bash
-.venv/bin/python scripts/test_agents.py --live --no-followup
-```
-
-本轮该真实模型场景通过：只发送一次委派，后台实际执行 shell 并写入指定文件；没有后续用户消息，主 agent 仍完成流式报告并把结果事件标记 report。测试没有读取或上传用户实际聊天历史；上述本地问题定位只做了只读查询。原生桌面显示本轮未重测。
+评估连续对话时，应同时观察前台首正文延迟、后台完成质量、补充应用延迟、重复执行率、结果报告延迟和模型开销。

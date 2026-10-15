@@ -4,12 +4,14 @@ import json
 import sys
 
 from .config import load_config
-from .context import FullHistoryContextProvider
-from .harness import AgentHarness, ArkModel, MockModel
+from .context import HistoryContextProvider
+from .harness import AgentLoop, ArkModel, MockModel
 from .service import ChatService, RpcError
 from .storage import HistoryStore
 from .runtime import AgentRuntime
 from .local_tools import LocalTools
+from .memory import MemoryStore
+from .memory_worker import MemoryCompiler
 
 
 def emit(message):
@@ -26,11 +28,16 @@ async def serve():
     service = None
     transport = None
     try:
-        context = FullHistoryContextProvider(store, prompt)
         model = MockModel() if config.provider == "mock" else ArkModel(config)
-        harness = AgentHarness(context, model)
+        memory = MemoryStore(store)
+        context = HistoryContextProvider(store, prompt, memory, recent_messages=config.memory_recent_messages)
+        compiler = MemoryCompiler(store, memory, model, interval=config.memory_interval_seconds,
+                                  threshold=config.memory_threshold_bytes, input_budget=config.context_token_budget)
+        harness = AgentLoop(context, model, compiler=compiler, token_budget=config.context_token_budget)
         AgentRuntime(store, context, harness, LocalTools(config.workspace, config.shell_enabled, secrets=(config.api_key,)), config.model)
         service = ChatService(store, context, harness, config.model, emit)
+        store.on_change = compiler.schedule
+        compiler.schedule()
         reader = asyncio.StreamReader(limit=1024 * 1024)
         transport, _ = await asyncio.get_running_loop().connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)

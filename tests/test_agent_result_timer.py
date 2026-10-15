@@ -6,8 +6,8 @@ import tempfile
 import time
 import unittest
 
-from backend.context import FullHistoryContextProvider
-from backend.harness import AgentHarness, ModelError, StreamPiece
+from backend.context import HistoryContextProvider
+from backend.harness import AgentLoop, ModelError, StreamPiece
 from backend.local_tools import LocalTools
 from backend.runtime import AgentRuntime
 from backend.service import ChatService, RpcError
@@ -42,9 +42,9 @@ class ResultTimerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.store = HistoryStore(Path(self.directory.name) / 'history.sqlite3')
-        self.context = FullHistoryContextProvider(self.store, 'persona')
+        self.context = HistoryContextProvider(self.store, 'persona')
         self.model = ResultModel()
-        harness = AgentHarness(self.context, self.model)
+        harness = AgentLoop(self.context, self.model)
         self.runtime = AgentRuntime(self.store, self.context, harness, LocalTools(self.directory.name), 'test')
         self.events = []
         self.service = ChatService(self.store, self.context, harness, 'test', self.events.append)

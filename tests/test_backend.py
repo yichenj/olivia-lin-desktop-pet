@@ -4,8 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from backend.context import FullHistoryContextProvider
-from backend.harness import AgentHarness, MockModel, ModelError, StreamPiece
+from backend.context import HistoryContextProvider
+from backend.harness import AgentLoop, MockModel, ModelError, StreamPiece
 from backend.service import ChatService, RpcError
 from backend.storage import HistoryStore
 
@@ -15,9 +15,9 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name) / "history.sqlite3"
         self.store = HistoryStore(self.path)
-        self.context = FullHistoryContextProvider(self.store, "test persona")
+        self.context = HistoryContextProvider(self.store, "test persona")
         self.events = []
-        self.service = ChatService(self.store, self.context, AgentHarness(self.context, MockModel()), "mock", self.events.append)
+        self.service = ChatService(self.store, self.context, AgentLoop(self.context, MockModel()), "mock", self.events.append)
 
     async def asyncTearDown(self):
         await self.service.close()
@@ -40,7 +40,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         await new.task
         history = self.store.all_messages()
         self.assertEqual([m["status"] for m in history], ["completed", "superseded", "completed", "completed"])
-        messages = self.context.build(1)
+        messages = self.context.build(1).messages
         self.assertEqual([m["role"] for m in messages], ["system", "user", "user", "assistant"])
         self.assertIn("下雨了 / 别推荐音乐", messages[-1]["content"])
         terminals = [e for e in self.events if e.get("method") == "chat/completed"]
@@ -56,7 +56,7 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         records = self.store.all_messages()
         self.assertEqual(records[-1]["status"], "failed")
         self.assertTrue(records[-1]["content"])
-        self.assertEqual(self.context.build(1), [{"role": "system", "content": "test persona"}, {"role": "user", "content": "[test:error]"}])
+        self.assertEqual(self.context.build(1).messages, [{"role": "system", "content": "test persona"}, {"role": "user", "content": "[test:error]"}])
         self.assertEqual(self.events[-1]["params"]["error"]["code"], "mock_error")
 
     async def test_shutdown_preserves_partial_without_client_cancel(self):
@@ -79,9 +79,9 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.store.close()
         self.store = HistoryStore(self.path)
         self.service.store = self.store
-        context = FullHistoryContextProvider(self.store, "test persona")
+        context = HistoryContextProvider(self.store, "test persona")
         self.assertEqual(self.store.all_messages()[-1]["status"], "interrupted")
-        self.assertEqual([m["content"] for m in context.build(1) if m["role"] == "user"], ["我叫小林", "还没回复"])
+        self.assertEqual([m["content"] for m in context.build(1).messages if m["role"] == "user"], ["我叫小林", "还没回复"])
 
     async def test_pagination_and_single_owner(self):
         with self.assertRaises(RuntimeError):
@@ -212,9 +212,8 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get_agent(nested)["parent_agent_id"], child)
         turn, message_id = self.store.begin("子任务资料", "mock", agent_id=child)
         self.store.finish(child, turn, message_id, "子任务结果", "completed")
-        self.context.refresh()
-        main = self.context.build(1)
-        sub = self.context.build(child)
+        main = self.context.build(1).messages
+        sub = self.context.build(child).messages
         self.assertNotIn("子任务资料", [m["content"] for m in main])
         self.assertEqual([m["content"] for m in sub][1:], ["子任务资料", "子任务结果"])
         self.assertTrue(all(m["agent_id"] == child for m in self.store.list_messages(agent_id=child)["messages"]))

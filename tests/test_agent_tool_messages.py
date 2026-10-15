@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from backend.context import FullHistoryContextProvider
-from backend.harness import AgentHarness
+from backend.context import HistoryContextProvider
+from backend.harness import AgentLoop
 from backend.local_tools import LocalTools
 from backend.runtime import AgentRuntime
 from backend.storage import HistoryStore
@@ -29,8 +29,8 @@ class ToolMessageTests(unittest.IsolatedAsyncioTestCase):
 
     def open(self):
         self.store = HistoryStore(self.path)
-        self.context = FullHistoryContextProvider(self.store, 'persona')
-        self.harness = AgentHarness(self.context, None)
+        self.context = HistoryContextProvider(self.store, 'persona')
+        self.harness = AgentLoop(self.context, None)
         self.runtime = AgentRuntime(self.store, self.context, self.harness, LocalTools(self.root, True), 'test')
 
     async def asyncTearDown(self):
@@ -66,8 +66,7 @@ class ToolMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]['result'], result)
         self.assertEqual(calls[0]['turn'], 1)
-        self.context.refresh()
-        replayed = self.context.build(child)
+        replayed = self.context.build(child).messages
         call_ids = []
         for index, message in enumerate(replayed):
             if message.get('tool_calls'):
@@ -82,8 +81,8 @@ class ToolMessageTests(unittest.IsolatedAsyncioTestCase):
         script = '''
 import asyncio, os, sys
 from pathlib import Path
-from backend.context import FullHistoryContextProvider
-from backend.harness import AgentHarness
+from backend.context import HistoryContextProvider
+from backend.harness import AgentLoop
 from backend.local_tools import LocalTools
 from backend.runtime import AgentRuntime
 from backend.storage import HistoryStore
@@ -91,14 +90,14 @@ root = Path(sys.argv[1])
 store = HistoryStore(root / 'history.sqlite3')
 child = store.create_agent()
 turn, draft = store.begin('执行', 'test', child)
-context = FullHistoryContextProvider(store, 'persona')
+context = HistoryContextProvider(store, 'persona')
 local = LocalTools(root, True)
 execute = local.execute
 async def crash_after_effect(name, args):
     await execute(name, args)
     os._exit(23)
 local.execute = crash_after_effect
-runtime = AgentRuntime(store, context, AgentHarness(context, None), local, 'test')
+runtime = AgentRuntime(store, context, AgentLoop(context, None), local, 'test')
 import json
 call = {'id': 'before-crash', 'type': 'function', 'function': {'name': 'run_shell',
     'arguments': json.dumps({'command': 'printf once >> marker.txt', 'operation_key': 'write'})}}
@@ -119,8 +118,7 @@ asyncio.run(runtime.execute(child, turn, call))
         self.assertEqual(result, {'error': 'outcome_unknown_check_before_retry'})
         self.assertEqual((self.root / 'marker.txt').read_text(), 'once')
         self.assertIsNone(self.store.find_tool_call(f'{child}:write')['result_message_id'])
-        self.context.refresh()
-        messages = self.context.build(child)
+        messages = self.context.build(child).messages
         self.assertFalse(any(c['id'] == 'before-crash' for m in messages for c in m.get('tool_calls', [])))
         self.assertTrue(any(m['role'] == 'system' and 'before-crash' in m['content'] for m in messages))
         history = self.runtime.inspect_subagent(child)['history']
@@ -137,8 +135,7 @@ asyncio.run(runtime.execute(child, turn, call))
         new_turn, new_draft = self.store.steer(child, turn, draft, '', '新的限制')
         with self.store.db:
             self.store.record_tool_result(mid, {'output': '实际结果'})
-        self.context.refresh()
-        messages = self.context.build(child)
+        messages = self.context.build(child).messages
         index = next(i for i, m in enumerate(messages) if m.get('tool_calls'))
         self.assertEqual(messages[index + 1]['tool_call_id'], 'late')
         self.assertEqual(messages[index + 2], {'role': 'user', 'content': '新的限制'})
@@ -164,7 +161,6 @@ asyncio.run(runtime.execute(child, turn, call))
         self.assertEqual(result, {'error': 'injected_failure'})
         self.assertFalse(self.store.children())
         self.assertFalse(self.store.keyed_tool_calls(1))
-        self.context.refresh()
-        messages = self.context.build(1)
+        messages = self.context.build(1).messages
         self.assertEqual(len([m for m in messages if m.get('tool_calls')]), 1)
-        self.assertEqual(json.loads(messages[-1]['content']), result)
+        self.assertEqual(json.loads(next(m['content'] for m in reversed(messages) if m['role'] == 'tool')), result)

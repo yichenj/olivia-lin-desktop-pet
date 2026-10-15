@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from backend.context import FullHistoryContextProvider
-from backend.harness import AgentHarness, StreamPiece
+from backend.context import HistoryContextProvider
+from backend.harness import AgentLoop, StreamPiece
 from backend.local_tools import LocalTools
 from backend.runtime import AgentRuntime
 from backend.service import ChatService
@@ -23,8 +23,8 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
         self.store = HistoryStore(self.root / 'history.sqlite3')
-        self.context = FullHistoryContextProvider(self.store, 'persona')
-        self.harness = AgentHarness(self.context, None)
+        self.context = HistoryContextProvider(self.store, 'persona')
+        self.harness = AgentLoop(self.context, None)
         self.runtime = AgentRuntime(self.store, self.context, self.harness, LocalTools(self.root, True), 'test')
         self.service = ChatService(self.store, self.context, self.harness, 'test', lambda e: None)
         turn, message = self.store.begin('整理文件', 'test')
@@ -73,8 +73,7 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result['history']), 130)
         self.assertEqual(result['history'][0]['content'], '输入0')
         self.assertEqual(result['history'][-1]['content'], '结果64')
-        self.context.refresh()
-        decorated = self.runtime.decorate(1, self.context.build(1))
+        decorated = self.context.build(1).messages
         snapshot = json.loads(decorated[-1]['content'].split('：', 1)[1])
         self.assertNotIn('history', snapshot['work'][0])
         self.assertNotIn('结果0', json.dumps(snapshot, ensure_ascii=False))

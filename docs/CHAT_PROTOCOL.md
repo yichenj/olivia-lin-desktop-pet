@@ -1,6 +1,6 @@
 # 桌宠持续对话协议
 
-状态：已实现。更新：2026-10-09。前端只有一个输入方法：`chat/send`。存储与内部生成管理见 [历史与记忆](HISTORY_MEMORY.md)，UI 行为见 [总体设计](AGENT_BACKEND.md)。
+前端只有一个输入方法：`chat/send`。存储与内部生成管理见 [历史与记忆](HISTORY_MEMORY.md)，UI 行为见 [总体设计](AGENT_BACKEND.md)。
 
 ## 交互边界与原因
 

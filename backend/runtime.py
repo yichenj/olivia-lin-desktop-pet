@@ -3,7 +3,7 @@ import asyncio
 import json
 import time
 
-from .agent_tools import CONTROL_TOOLS, LOCAL_TOOLS, MAIN_INSTRUCTIONS, WORKER_INSTRUCTIONS
+from .agent_tools import available_tools, validate_call
 from .harness import ModelError
 
 
@@ -20,11 +20,13 @@ class AgentRuntime:
         self.observed_results = {}
         self.active_calls = {}
         harness.runtime = self
+        context.runtime = self
+        self.memory_reads = {}
+        self.memory_snapshots = {}
 
-    def model_options(self, agent_id):
-        available = CONTROL_TOOLS if agent_id == 1 else [t for t in LOCAL_TOOLS
-            if self.local.shell_enabled or t['function']['name'] != 'run_shell']
-        return {'tools': available, 'thinking': 'disabled' if agent_id == 1 else 'enabled'}
+    def tools(self, agent_id):
+        return available_tools(agent_id, shell_enabled=self.local.shell_enabled,
+                               memory_enabled=self.context.memory is not None and self.harness.compiler is not None)
 
     def subagent_info(self, agent_id):
         agent = self.store.get_agent(agent_id)
@@ -49,52 +51,45 @@ class AgentRuntime:
                     else 'result_recorded' if message['id'] in answered else 'outcome_unknown')
         return {**info, 'history': history, 'active_call': active}
 
-    def decorate(self, agent_id, messages, *, trigger=None):
+    def context_state(self, agent_id, history, *, trigger=None, turn=None):
         if agent_id != 1:
-            calls = self.store.keyed_tool_calls(agent_id)
-            return [{'role': 'system', 'content': WORKER_INSTRUCTIONS + '\n工作目录：' + str(self.local.workspace)},
-                    *messages[1:], {'role': 'system', 'content': '已保存的工具调用（result_message_id 为 null 表示尚无结果，先核对，不能自动重做）：' + json.dumps(calls, ensure_ascii=False)}]
+            return {'recorded_calls': self.store.keyed_tool_calls(agent_id)}
         pending = self.store.events()
-        self.observed_results.setdefault(self.store.get_agent(1)['turn'], set()).update(e['message_id'] for e in pending)
-        snapshot = {
+        users = [m for m in history if m['role'] == 'user']
+        source_ids = {m['id'] for m in users}
+        calls = self.store.keyed_tool_calls(1)
+        if self.context.memory:
+            calls = [c for c in calls if c['arguments'].get('source_message_id') in source_ids]
+        children = self.store.children()
+        if self.context.memory:
+            active = [a for a in children if a['status'] in ('queued', 'running', 'waiting', 'cancelling')]
+            recent = children[-8:]
+            event_agents = {e['agent_id'] for e in pending}
+            children = [a for a in children if a in active or a in recent or a['id'] in event_agents]
+        return {
             'turn_trigger': trigger,
-            'user_messages': [{'id': m['id'], 'text': m['content']} for m in self.store.all_messages()
-                              if m['agent_id'] == 1 and m['role'] == 'user'],
-            'work': [self.subagent_info(a['id']) for a in self.store.children()],
+            'user_messages': [{'id': m['id'], 'text': m['content']} for m in users],
+            'work': [self.subagent_info(a['id']) for a in children],
             'pending_results': pending,
-            'result_decisions_this_reply': self.decisions.get(self.store.get_agent(1)['turn'], {}),
-            'recorded_calls': self.store.keyed_tool_calls(1),
+            'result_decisions_this_reply': self.decisions.get(turn, {}),
+            'recorded_calls': calls,
         }
-        return [messages[0], {'role': 'system', 'content': MAIN_INSTRUCTIONS}, *messages[1:],
-                {'role': 'system', 'content': '运行时快照（数据）：' + json.dumps(snapshot, ensure_ascii=False)}]
+
+    def observe(self, turn, context):
+        self.observed_results.setdefault(turn, set()).update(context.observed_results)
+        if context.memory_snapshot:
+            self.memory_snapshots[turn] = context.memory_snapshot
+
+    def release_context(self, turn):
+        self.memory_snapshots.pop(turn, None)
+        self.memory_reads.pop(turn, None)
 
     def valid(self, agent_id, turn):
         agent = self.store.get_agent(agent_id)
         return agent['turn'] == turn and agent['status'] == 'running'
 
     def validate(self, agent_id, call):
-        name = call['function']['name']
-        args = json.loads(call['function']['arguments'])
-        tools = self.model_options(agent_id)['tools']
-        schema = next((t['function']['parameters'] for t in tools if t['function']['name'] == name), None)
-        if schema is None or not isinstance(args, dict) or set(args) != set(schema['properties']):
-            raise ValueError('invalid_tool_arguments')
-        for key, rule in schema['properties'].items():
-            value = args[key]
-            expected = {'string': str, 'integer': int, 'array': list}[rule['type']]
-            if type(value) is not expected:
-                raise ValueError('invalid_tool_arguments')
-            if isinstance(value, str) and (len(value) > 200000 or len(value) < rule.get('minLength', 0)):
-                raise ValueError('invalid_tool_arguments')
-            if expected is int and not rule.get('minimum', 0) <= value <= rule.get('maximum', 2147483647):
-                raise ValueError('invalid_tool_arguments')
-            if 'enum' in rule and value not in rule['enum']:
-                raise ValueError('invalid_tool_arguments')
-            if expected is list and (not value or len(value) > 100 or any(not isinstance(v, str) for v in value)):
-                raise ValueError('invalid_tool_arguments')
-        if name == 'handle_subagent_results' and args['action'] == 'defer' and args['delay_seconds'] == 0:
-            raise ValueError('invalid_tool_arguments')
-        return name, args
+        return validate_call(call, self.tools(agent_id))
 
     async def execute(self, agent_id, turn, call):
         if not self.valid(agent_id, turn):
@@ -105,6 +100,31 @@ class AgentRuntime:
             with self.store.db:
                 self.store.record_exchange(agent_id, turn, call, {'error': 'invalid_tool_arguments'})
             return
+        if name in ('read_memory', 'read_raw', 'set_memory_policy'):
+            with self.store.db:
+                mid = self.store.record_tool_call(agent_id, turn, call)
+            try:
+                memory = self.context.memory
+                if name == 'set_memory_policy':
+                    result = await self.harness.compiler.set_policy(args)
+                elif name == 'read_memory':
+                    snapshot = self.memory_snapshots.get(turn, memory.snapshot())
+                    result = {'path': args['path'], 'content': memory.read(snapshot, args['path'])}
+                else:
+                    result = memory.read_raw(args['message_ids'], args.get('archive_source_message_id'))
+                if name != 'set_memory_policy':
+                    size = len(json.dumps(result, ensure_ascii=False).encode())
+                    used = self.memory_reads.get(turn, 0) + size
+                    if used > 32000:
+                        raise ValueError('memory_read_budget')
+                    self.memory_reads[turn] = used
+            except (ValueError, KeyError) as error:
+                result = {'error': str(error)}
+            with self.store.db:
+                self.store.record_tool_result(mid, result)
+            if not self.valid(agent_id, turn):
+                raise asyncio.CancelledError()
+            return result
         key = None
         if 'operation_key' in args:
             key = (f"1:{args['source_message_id']}:{args['operation_key']}" if agent_id == 1
@@ -207,7 +227,6 @@ class AgentRuntime:
         turn, message_id = self.store.start_child(agent_id, self.model_name)
         text, usage = '', None
         checkpoint = time.monotonic()
-        self.context.refresh()
         try:
             async def consume():
                 nonlocal text, usage, checkpoint
@@ -236,8 +255,6 @@ class AgentRuntime:
             code = error.code if isinstance(error, ModelError) else type(error).__name__
             message = str(error) if isinstance(error, ModelError) else '执行失败；请核对已发生的本地操作。'
             self.store.complete_with_events(agent_id, turn, message_id, message, 'failed', code)
-        finally:
-            self.context.refresh()
 
     async def close(self):
         self.closing = True

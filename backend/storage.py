@@ -1,5 +1,6 @@
 """Agent-owned SQLite history; accessed only by the backend event-loop thread."""
 from datetime import datetime, timezone
+from copy import deepcopy
 import fcntl
 import json
 from pathlib import Path
@@ -17,9 +18,32 @@ def uid():
     return uuid.uuid4().hex
 
 
+class HistoryConnection(sqlite3.Connection):
+    """Publish changed rows only after SQLite has resolved a transaction."""
+    after_transaction = None
+
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            if not self.in_transaction and self.after_transaction:
+                self.after_transaction()
+
+    def commit(self):
+        super().commit()
+        if self.after_transaction:
+            self.after_transaction()
+
+    def rollback(self):
+        super().rollback()
+        if self.after_transaction:
+            self.after_transaction()
+
+
 class HistoryStore:
     def __init__(self, path):
         path = Path(path)
+        self.path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = open(str(path) + ".lock", "a")
         try:
@@ -28,7 +52,7 @@ class HistoryStore:
             self.lock.close()
             raise RuntimeError("history_in_use") from None
         try:
-            self.db = sqlite3.connect(path)
+            self.db = sqlite3.connect(path, factory=HistoryConnection)
             self.db.row_factory = sqlite3.Row
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -93,6 +117,19 @@ class HistoryStore:
                         message = self._message(row['id'], row['turn'] or None, 'tool',
                                                 '进程退出，执行已中断。未确认的文件或命令操作不得自动重试；先核对实际状态。', 'completed')
                         self._event(row['id'], row['turn'], message)
+            self._messages = {r['id']: dict(r) for r in self.db.execute('SELECT * FROM messages ORDER BY seq')}
+            self._payloads = {r['message_id']: json.loads(r['payload']) for r in self.db.execute('SELECT * FROM message_payloads')}
+            self._dirty = set()
+            self.revision = 0
+            self.on_change = lambda: None
+            # Connection-local triggers track precisely the rows touched, including
+            # writes in a caller-owned transaction. No durable cache/change table.
+            self.db.create_function('history_changed', 1, lambda mid: self._dirty.add(mid))
+            for table, key in (('messages', 'id'), ('message_payloads', 'message_id')):
+                for action, row in (('INSERT', 'NEW'), ('UPDATE', 'NEW'), ('DELETE', 'OLD')):
+                    self.db.execute(f'''CREATE TEMP TRIGGER cache_{table}_{action} AFTER {action} ON {table}
+                        BEGIN SELECT history_changed({row}.{key}); END''')
+            self.db.after_transaction = self._publish_changes
         except Exception:
             if hasattr(self, "db"):
                 self.db.close()
@@ -167,24 +204,63 @@ class HistoryStore:
         return True
 
     def all_messages(self):
-        return [dict(row) for row in self.db.execute("SELECT * FROM messages ORDER BY seq")]
+        messages, _ = self._views()
+        return [dict(m) for m in sorted(messages.values(), key=lambda m: m['seq'])]
+
+    def _changed_rows(self):
+        changes = {}
+        for mid in self._dirty:
+            row = self.db.execute('SELECT * FROM messages WHERE id=?', (mid,)).fetchone()
+            payload = self.db.execute('SELECT payload FROM message_payloads WHERE message_id=?', (mid,)).fetchone()
+            changes[mid] = (dict(row) if row else None, json.loads(payload[0]) if payload else None)
+        return changes
+
+    @staticmethod
+    def _apply_changes(messages, payloads, changes):
+        for mid, (row, payload) in changes.items():
+            if row is None:
+                messages.pop(mid, None)
+            else:
+                messages[mid] = row
+            if payload is None:
+                payloads.pop(mid, None)
+            else:
+                payloads[mid] = payload
+
+    def _publish_changes(self):
+        if not self._dirty:
+            return
+        changes = self._changed_rows()
+        changed = any(self._messages.get(mid) != row or self._payloads.get(mid) != payload
+                      for mid, (row, payload) in changes.items())
+        self._apply_changes(self._messages, self._payloads, changes)
+        self._dirty.clear()
+        if changed:
+            self.revision += 1
+            self.on_change()
+
+    def _views(self):
+        if not self._dirty:
+            return self._messages, self._payloads
+        # Transactional callers can inspect their own pending writes without
+        # publishing uncommitted state to the shared cache.
+        messages, payloads = dict(self._messages), dict(self._payloads)
+        self._apply_changes(messages, payloads, self._changed_rows())
+        return messages, payloads
+
+    def message(self, message_id):
+        messages, _ = self._views()
+        row = messages.get(message_id)
+        return dict(row) if row else None
 
     def agent_history(self, agent_id):
         """All persisted history, including audit drafts and complete tool payloads."""
         self.get_agent(agent_id)
-        rows = self.db.execute('''SELECT m.*, p.payload FROM messages m
-                                  LEFT JOIN message_payloads p ON p.message_id=m.id
-                                  WHERE m.agent_id=? ORDER BY m.seq''', (agent_id,))
-        history = []
-        for row in rows:
-            message = dict(row)
-            payload = message.pop('payload')
-            message['payload'] = json.loads(payload) if payload is not None else None
-            history.append(message)
-        return history
+        payloads = self.payloads()
+        return [{**m, 'payload': payloads.get(m['id'])} for m in self.all_messages() if m['agent_id'] == agent_id]
 
     def payloads(self):
-        return {r['message_id']: json.loads(r['payload']) for r in self.db.execute('SELECT * FROM message_payloads')}
+        return deepcopy(self._views()[1])
 
     def children(self):
         return [dict(r) for r in self.db.execute('SELECT * FROM agents WHERE parent_agent_id=1 ORDER BY id')]

@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from backend.context import FullHistoryContextProvider
-from backend.harness import AgentHarness, StreamPiece
+from backend.context import HistoryContextProvider
+from backend.harness import AgentLoop, StreamPiece
 from backend.local_tools import LocalTools
 from backend.runtime import AgentRuntime
 from backend.service import ChatService
@@ -89,8 +89,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     def open(self):
         self.store = HistoryStore(self.root / 'test.sqlite3')
-        self.context = FullHistoryContextProvider(self.store, 'persona')
-        self.harness = AgentHarness(self.context, self.model)
+        self.context = HistoryContextProvider(self.store, 'persona')
+        self.harness = AgentLoop(self.context, self.model)
         self.runtime = AgentRuntime(self.store, self.context, self.harness, LocalTools(self.root, True), 'test')
         self.events = []
         self.service = ChatService(self.store, self.context, self.harness, 'test', self.events.append)
@@ -119,7 +119,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.root / 'marker.txt').read_text(), 'started')
         await self.send('今天累死了')
         self.assertEqual(self.store.get_agent(child['id'])['status'], 'running')
-        self.assertNotIn('今天累死了', str(self.context.build(child['id'])))
+        self.assertNotIn('今天累死了', str(self.context.build(child['id']).messages))
         self.model.gate.set()
         await self.until(lambda: any('Olivia 转述' in e.get('params', {}).get('text', '') for e in self.events))
         await self.until(lambda: not self.store.events())
@@ -127,7 +127,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all('agentId' not in e.get('params', {}) and 'turn' not in e.get('params', {}) for e in self.events))
         self.assertEqual([m['content'] for m in self.store.all_messages() if m['agent_id'] == 1 and m['role'] == 'user'], ['开始', '今天累死了'])
         # Provider replay contains paired calls BEFORE the final assistant text.
-        context = self.context.build(1)
+        context = self.context.build(1).messages
         first_tool = next(i for i, m in enumerate(context) if m.get('tool_calls'))
         first_reply = next(i for i, m in enumerate(context) if m.get('content') == '好，已受理。')
         self.assertLess(first_tool, first_reply)

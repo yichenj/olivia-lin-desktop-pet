@@ -3,7 +3,7 @@ __pycache__/
 .manus-*.tmp*
 .DS_Store
 
-# Local previews, image-generation candidates and render intermediates.
+# Local previews, review reports, image-generation candidates and render intermediates.
 /output/
 /build/
 /.venv/
@@ -13,3 +13,4 @@ __pycache__/
 *.sqlite3
 *.sqlite3-*
 *.sqlite3.lock
+*.memory/

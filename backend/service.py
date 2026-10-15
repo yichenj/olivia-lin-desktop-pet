@@ -73,7 +73,7 @@ class ChatService:
         number, message_id = self.store.start_reply(self.model_name)
         current = Turn(MAIN_AGENT_ID, number, message_id, proactive=True, visible=False)
         self.active = current
-        self.context.refresh()
+        self.harness.schedule_memory()
         current.task = asyncio.create_task(self.generate(current))
 
     def notify(self, method, params):
@@ -114,7 +114,7 @@ class ChatService:
         if previous:
             await self.stop_task(previous)
         self.accepting = False
-        self.context.refresh()
+        self.harness.schedule_memory()
         self.result(request, {})
         self.notify("chat/started", current.display_identity())
         current.task = asyncio.create_task(self.generate(current))
@@ -122,8 +122,8 @@ class ChatService:
     async def generate(self, current):
         checkpoint = time.monotonic()
         try:
-            # Total deadline prevents an upstream stream from keeping the UI busy forever.
-            await asyncio.wait_for(self.consume(current, checkpoint), timeout=300)
+            # AgentLoop budgets active execution separately from memory maintenance waits.
+            await self.consume(current, checkpoint)
             decisions = self.runtime.decisions.get(current.number, {}) if self.runtime else {}
             silent = current.proactive and decisions and all(d[0] != 'report' for d in decisions.values())
             if not current.text.strip() and not silent:
@@ -174,7 +174,7 @@ class ChatService:
             committed = self.store.finish(current.agent_id, current.number, current.message_id, current.text, status, code, current.usage)
         if not committed:
             return
-        self.context.refresh()
+        self.harness.schedule_memory()
         self.active = None
         params = {**current.display_identity(), "status": status, "text": current.text}
         if code:
@@ -212,3 +212,4 @@ class ChatService:
             self.active = None
         if self.runtime:
             await self.runtime.close()
+        await self.harness.close()

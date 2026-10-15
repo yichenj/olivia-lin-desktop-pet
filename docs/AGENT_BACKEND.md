@@ -1,144 +1,116 @@
-# 桌宠与本地 Agent Backend 总体设计
+# 后端与 UI
 
-状态：持续聊天、agent 历史与 turn 调度已实现，验证记录见 [运行与测试](CHAT_TESTING.md)。
+桌宠由 PyQt UI 和本地 Python backend 两个进程组成。UI 发送用户的话语并展示流式回复；backend 维护 Olivia 的持续对话、后台执行、历史和记忆。
 
-首版采用一个 Olivia 对话 agent 协调独立后台执行上下文，包含本地文件/命令执行与结果驱动的主动回复。强需求、单一 loop 的备选分析、选择原因和落地范围见 [Agent 架构决策](AGENT_ARCHITECTURE.md)。下文现有实现与未来设计分开标注。
+本文说明模块如何连接、请求如何流转以及 UI 如何呈现结果。架构取舍见 [Agent 架构](AGENT_ARCHITECTURE.md)，协议字段见 [通信协议](CHAT_PROTOCOL.md)，数据契约见 [历史与记忆](HISTORY_MEMORY.md)。
 
-总体方案确认：2026-10-08。实现更新：2026-10-10。
-
-## 1. 产品模型与范围
-
-根本设计：这是用户与 Olivia 持续、自然地说话。界面不提供“停止生成/取消任务”等任务控制入口，也没有 thread、创建会话或切换会话。补充输入是自然对话的一部分，取消旧生成仅是内部实现。此约束同时记录在项目根目录 AGENTS.md。界面只把文字通过 chat/send 送给 Olivia，并流式显示她的话。当前 backend 在新输入到来时自行调整尚未完成的草稿；前端不区分新话题和补充，也不参与生成控制。
-
-当前包括本地 backend、Qt 客户端、Ark 模型接入、SQLite 历史和全量上下文。另包含内部工具循环、单槽后台执行、结果投递及恢复。图片、语音、实际音乐播放、业务连接器、历史浏览界面及记忆检索尚未实现。
-
-## 2. 总体架构
-
-两个大框代表两个本地进程，框内是模块，SQLite 是本地文件而非独立服务。
+## 模块与数据流
 
 ```mermaid
 flowchart LR
-    subgraph UIProcess["桌宠 UI 进程"]
-        UI["PyQt 界面"]
-        Client["BackendClient"]
-        UI <-->|"Qt 信号"| Client
+    subgraph UIProcess["UI 进程"]
+        UI["人物与气泡"] <--> Client["BackendClient"]
     end
-
-    subgraph BackendProcess["本地 Backend 进程"]
-        Service["Backend 服务层"]
-        Harness["Agent Harness"]
-        Store["历史存储"]
-        Service <--> Harness
-        Runtime["执行运行时 / 本地工具"]
-        Harness <--> Runtime
-        Runtime <--> Store
-        Service <--> Store
+    subgraph BackendProcess["Backend 进程"]
+        Service["ChatService"] <--> Loop["AgentLoop"]
+        Loop --> Context["ContextProvider"]
+        Loop <--> Runtime["AgentRuntime"]
+        Context --> Runtime
+        Service --> History["HistoryStore"]
+        Runtime --> History
+        Context --> History
+        Context --> Memory["MemoryStore"]
+        Runtime --> Memory
+        Loop --> Compiler["MemoryCompiler"]
+        Compiler --> History
+        Compiler <--> Memory
     end
-
-    DB[("SQLite")]
-    Model["模型服务"]
-    Client <-->|"JSON-RPC 2.0 over stdio"| Service
-    Store <--> DB
-    Harness <--> Model
-
-    classDef frontend fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
-    classDef backend fill:#f5f3ff,stroke:#8b5cf6,color:#4c1d95
-    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155
-    class UI,Client frontend
-    class Service,Harness,Store backend
-    class DB,Model external
-    style UIProcess fill:#f8fbff,stroke:#93c5fd
-    style BackendProcess fill:#faf8ff,stroke:#c4b5fd
+    Client <-->|"JSON-RPC over stdio"| Service
+    History <--> DB[("SQLite")]
+    Memory <--> Files[("Markdown 版本目录")]
+    Loop <-->|"流式模型请求"| Model["模型服务"]
+    Compiler <--> Model
 ```
 
-服务层包含 RPC 接入和聊天执行管理。模型服务使用用户指定的方舟 endpoint；harness 组织上下文、聚合 SSE 工具参数、执行内部工具并继续模型循环。Backend 内模块通过普通接口连接，跨进程只使用 JSON-RPC over stdio。
+| 文件 | 主要职责 |
+| --- | --- |
+| `pet.py`、`speech_bubble.py` | 用户输入、人物表现、气泡排版、滚动和可见性 |
+| `backend_client.py` | QProcess 管理、请求与通知解析、Qt 信号 |
+| `backend/__main__.py` | 配置加载、组件组装、JSONL 接入和退出清理 |
+| `backend/service.py` | 输入受理、主 turn 与草稿、结果 timer、流式展示通知 |
+| `backend/harness.py` | AgentLoop 模型/工具循环、Ark SSE 适配与测试模型 |
+| `backend/context.py` | 统一组装消息、工具和运行资料，检查整体预算 |
+| `backend/runtime.py` | 子 agent 执行槽、工具分派、取消、去重和结果决定 |
+| `backend/agent_tools.py` | 工具定义、参数校验和角色使用规则 |
+| `backend/local_tools.py` | 异步文件操作、shell 进程组、超时和输出限制 |
+| `backend/storage.py` | SQLite 事务、消息内存视图、检查点与恢复 |
+| `backend/memory.py` | 记忆快照、受限读取、文件校验和完整版本发布 |
+| `backend/memory_worker.py` | 主对话异步加工、批次调度和记忆约定 |
+| `backend/config.py`、`prompts/olivia.md` | 本地配置与角色提示词 |
 
-| 所属 | 模块 / 文件 | 职责 |
-| --- | --- | --- |
-| UI 进程 | `pet.py`、`speech_bubble.py` | 输入、人物表现、漫画气泡、滚动、状态和恢复草稿 |
-| UI 进程 | `backend_client.py` | QProcess 生命周期、统一文本发送、受理确认和消息显示通知 |
-| Backend 进程 | `backend/__main__.py` | JSONL 接入、协议校验、分发、退出清理 |
-| Backend 进程 | `backend/service.py` | 聊天调度、steer、取消、执行状态和持久化协调 |
-| Backend 进程 | `backend/harness.py` | AgentHarness 工具循环、Ark SSE 文本/工具调用适配 |
-| Backend 进程 | `backend/runtime.py`、`backend/agent_tools.py` | 内部控制、后台槽、工具定义、结果事件 |
-| Backend 进程 | `backend/local_tools.py` | 异步文件操作、shell 进程组、超时和输出限制 |
-| Backend 进程 | `backend/context.py` | 可替换的 ContextProvider，当前按 agent 组织全量有效历史 |
-| Backend 进程 | `backend/storage.py` | SQLite 消息、工具调用/结果关联与去重、事务、检查点和恢复 |
-| Backend 配置 | `backend/config.py`、`prompts/olivia.md` | 环境变量 / 本地配置、角色提示词 |
+后端模块通过普通接口协作，只有 UI 与 backend 之间跨进程通信。SQLite 和记忆目录都是本地存储，不是独立服务。
 
-## 3. 界面行为
+## 对话请求路径
 
-- 气泡是由人物窗口拥有的独立 Qt 工具窗口，与人物处于同一 UI 进程，原有 450 × 620 人物窗口不缩放。
-- 位于头部旁边，采用椭圆轮廓和柔和漫画尖角；随人物移动，在屏幕边缘切换左右并限制在可用区域内。
-- 气泡依据字体排版与文字量自动增长：等待和短句从 140 × 88 起步，最大 360 × 320；仅超过最大容量后显示滚动条。正文在椭圆内居中布局，支持选中和复制，向上阅读时不强制滚到末尾。
-- 完成后默认 30 秒自动收起；鼠标悬停、正文获得焦点、选中文字或向上滚动阅读时暂停计时。生成期间及人物隐藏期间也不计时。`bubble_seconds` 可调。
-- 等待时只显示轻微跳动的省略号，不显示任务状态标题。气泡没有关闭叉号或其他按钮。右键菜单合并为“关闭对话 / 展开对话”，随当前显示状态切换；卡片“对话”入口使用相同逻辑。关闭只收起气泡，后台继续输出，完成时不会自行重新弹出。
-- 显示回复期间输入始终可用，发送动作保持一致；backend 发来新的消息开始通知时切换气泡内容。气泡和右键菜单均不提供停止入口。
-- 失败和中断保留已有文字并展示状态。受理失败恢复输入草稿；右键可以重新连接或把上次聊天输入填回输入框重试。
+1. BackendClient 将 `chat/send({text})` 写入 backend 的 stdin。
+2. ChatService 保存用户原话、分配主 turn 和草稿，替换过期草稿，然后返回受理响应。
+3. AgentLoop 从 ContextProvider 获取完整的 messages 和 tools，调用模型适配器。
+4. ArkModel 持续解析上游 SSE；每段正文立即通过 `chat/delta` 返回 UI，不等待全文完成。
+5. 模型请求工具时，AgentLoop 将调用交给 Runtime。Runtime 校验、保存调用和结果，后续模型请求通过 ContextProvider 看到工具返回。
+6. 回复结束后，ChatService 校验当前 turn，保存正文和有效结果决定，发送完成通知并重排结果 timer。
 
-### 异步结果的界面行为
+循环等待模型、工具或记忆加工时，事件循环仍可受理输入。是否创建、补充或取消工作由主 agent 决定；替换前台草稿不会自动停止业务子 agent。轮次竞争和结果唤醒规则见 [Agent 架构](AGENT_ARCHITECTURE.md)。
 
-- 始终只有 Olivia 的自然对话出口；subagent 不直接输出到气泡，不引入工作对话切换、任务标题、停止按钮或技术执行状态。
-- 执行期间输入保持可用，用户可以聊完全无关的话题。替换前台回复草稿不影响无关的后台工作，也不改变人物素材与几何。
-- 主动回复通过同一条 SSE → JSON-RPC → UI 流式链路展示；后台事件由调度器排队，不允许多个回复同时向气泡追加文字。
-- 用户主动“关闭对话”后，后台工作和结果保存继续，完成事件不重新展开气泡；重新展开时可查看最新有效回复。隐藏到托盘也不因结果强行显示人物。
-- 未主动关闭且人物可见时，允许结果回复在调度器选定的时机展示；它可以结束正常的自动收起状态，但不能覆盖用户正在阅读的内容。阅读结束后再展示排队回复，避免抢占阅读。
+前端只用 messageId 关联正在显示的文字，不接收或发送 agent ID、turn 或执行控制信息。受理响应和一条文字流结束都不是用户任务边界。
 
-这些规则让后台独立推进，同时保持用户对可见性与阅读节奏的控制。主动生成、结果持久化与气泡可见是独立状态。主 agent 暂缓后的单 timer 调度、用户提前询问时的取消与重建，见 [结果暂缓与 Timer 方案](AGENT_ARCHITECTURE.md#51-subagent-结果暂缓timer-与提前询问)。
+## 历史与记忆集成
 
-## 4. 执行与进程生命周期
+HistoryStore 在启动恢复后加载原始消息，事务提交时增量更新内存视图。MemoryStore 加载已发布的记忆版本，ContextProvider 从这两个 Store 读取资料，不维护另一份需要调用方刷新的历史缓存。
 
-UI 使用当前 Python 解释器启动 `python -u -m backend`。Backend 的 asyncio 事件循环串行接收文字，模型流以可中断的内部协程执行；生成期间仍可接收新话语，由主对话服务决定是否替换当前草稿。
+MemoryCompiler 在有待处理主对话时安排异步加工。正常加工与聊天、业务执行独立进行；上下文放不下未加工内容时，AgentLoop 才等待加工再重建。MemoryStore 完整发布文件后切换内存快照，主 agent 可以通过 read_memory 和 read_raw 进一步查阅。
 
-应用启动后连接 backend；隐藏到托盘时继续运行；彻底退出时关闭 stdin，取消生成并落库。若子进程未及时退出，UI 依次终止和强制结束。Backend 异常退出后 UI 结束等待，允许用户手动重新连接，不自动重发已发送输入。
+原始历史、记忆页面、加工状态的归属和事务边界统一定义在 [历史与记忆](HISTORY_MEMORY.md)。
 
-同一数据库只允许一个 backend 写入，通过文件锁约束。先启动的实例继续工作，后启动的实例报告无法连接。
+## 模型适配与配置
 
-### Turn 调度边界
+ArkModel 使用 OpenAI Python SDK 的 AsyncOpenAI 调用方舟 Chat Completions。适配器接收模型消息、工具 schema 和调用设置，返回流式正文、工具调用及用量，不依赖 agent 存储或 UI。
 
-每个 agent 独立维护 turn。新用户话语受理时主 turn +1，先替换旧草稿再取消旧请求；迟到输出丢弃。子 agent 创建或补充受理时推进自身 turn，排队后取得执行槽不再递增。一轮内的模型/工具循环共享同一个 turn。
+正文逐段转发，tool_calls 参数在流中聚合完整后再执行；工具返回使用 tool_call_id 配对。模型调用失败以受控错误反馈，凭据和完整服务响应不进入前端错误消息。
 
-结果事件入库不推进主 turn。唯一的 timer 只有在主 agent 空闲且仍有到期 pending 时才启动新 turn；忙碌时保留事件，当前轮结束后重排。用户输入会取消 timer，已经启动的主动回复则由用户的新 turn 替换。各轮不会因过期自行重启。
+主 agent 使用 `thinking.type=disabled`；业务子 agent 和记忆加工使用 enabled。角色提示独立保存在 `prompts/olivia.md`，人物设定的来源见 [PERSONA.md](PERSONA.md)。
 
-ChatService 将本轮触发来源随 Harness 调用传给 AgentRuntime，主模型快照用 turn_trigger 区分 user_input / subagent_results；这项信息不进入前端协议，也不另建存储身份。它说明当前轮的来源，不能当作历史发言已显示的证据。
+API key、base URL 和 model / endpoint 统一读取被 Git 忽略的本地配置，支持对应环境变量覆盖。缺少必填项时不回退到默认服务。配置字段、默认值和运行命令见 [运行与验证](CHAT_TESTING.md#配置和启动)。
 
-ChatService 分配主 turn，AgentRuntime/HistoryStore 分配子 turn，Harness 校验启动时传入的 turn 并执行工具循环；ArkModel 和 UI 不接触内部计数。完整触发规则、竞态和结果暂缓见 [Agent 架构](AGENT_ARCHITECTURE.md#35-turn每个-agent-独立的处理轮次)，事务与字段见 [历史与记忆](HISTORY_MEMORY.md#turn-的存储与事务)。
+## 展示行为
 
-## 5. 模型与角色
+### 气泡布局
 
-使用 OpenAI Python SDK 的 `AsyncOpenAI` 接入方舟 Chat Completions：
+气泡是人物窗口拥有的 Qt 工具窗口，位于头部旁边，随人物移动并在屏幕边缘调整方向。人物窗口保持原有 450 × 620 几何和素材。
 
-- API key、base URL 和 model / endpoint 全部读取被 Git 忽略的 `.olivia.local.json`，字段为 api_key、base_url、model；代码与示例文件不内置实际接入地址或接入点。
-- `stream=True`，方舟通过 HTTP SSE（`text/event-stream`）持续返回；每段正文立即转换为 JSON-RPC `chat/delta` 并 flush 到 UI，不等待整段完成。
-- 运行时主 agent 固定 `thinking.type=disabled`，子 agent 使用 `enabled`。thinking 配置保留为直接调用适配器的默认值，不覆盖这两个角色的选择。首次排查的同一条短消息样本，默认模式首正文 24.8 秒，关闭思考后 2.9 秒。该值是单次测量，不是延迟承诺。
-- 环境变量 ARK_API_KEY、ARK_BASE_URL、ARK_MODEL 可覆盖本地对应字段。缺少必填项时明确提示补全，不回退到某个默认服务；SDK 不自动重试。
+气泡采用圆润的椭圆轮廓和漫画尖角，从紧凑的 140 × 88 起随文字增长，最大为 360 × 320；达到上限后才滚动。正文居中布局，支持选择和复制，向上阅读时不强制滚到底部。等待时显示轻微跳动的省略号，不显示执行状态标题。
 
-角色 prompt 独立存放，可修改后重启。公开人设参考与本项目补充的口吻分开记录在 [PERSONA.md](PERSONA.md)。
+### 可见性与阅读
 
-## 6. 通信协议
+气泡没有关闭叉号、按钮或任务控制入口。右键菜单的“关闭对话 / 展开对话”和卡片“对话”入口控制同一可见状态；关闭只隐藏内容，后台输出和持久化继续。
 
-前端只有 `chat/send({text})`，在 Olivia 说话前、说话中和说完后完全相同。响应只确认受理。启动由 backend/ready 通知，正文由 chat/started、chat/delta、chat/completed 通知返回；messageId 仅用于把文字显示到正确消息。
+回复完成后默认闲置 30 秒收起，可通过 bubble_seconds 调整。鼠标悬停、焦点、选中文字、向上阅读、生成中或人物隐藏时暂停自动收起。
 
-Agent ID 和 turn 是后端内部信息，不进入前端协议；没有前端补充、取消、选 agent 或查询内部历史的方法。主 agent 自己接收持续输入并维护生成，UI 只发送话语、显示话语。
+| 场景 | UI 行为 |
+| --- | --- |
+| 回复期间继续输入 | 输入保持可用；新消息开始时切换显示对象，过滤旧消息的迟到片段 |
+| 用户主动关闭气泡 | 后台结果不重新打开；展开时可查看最新有效回复 |
+| 人物隐藏或最小化 | 结果不强行显示人物 |
+| 用户正在阅读旧内容 | 新文字暂存，阅读结束后再展示 |
+| 正常自动收起后到达主动回复 | 人物可见时允许显示新回复 |
+| 模型失败或中断 | 保留已有文字并显示失败状态 |
+| 输入受理失败 | 恢复输入草稿；用户可以编辑后重试 |
 
-消息示例、错误与断开语义见 [通信协议](CHAT_PROTOCOL.md)。
+主动生成、回复持久化和用户看见内容是三个不同事件。UI 可见性不会改变业务执行或结果投递状态，backend 也不把 report 当作已读确认。
 
-## 7. 历史与记忆
+## 进程生命周期
 
-SQLite 用 agents 和 messages 保存身份、父子关系与各自历史，主 agent 为 1，parent_agent_id 为空；子 agent 指向父 agent，无 kind 字段。UI 不直接读数据库。模型上下文按 agent 筛选有效消息，用户输入始终保留，失败/中断/被替换的模型草稿只保留审计记录。主 agent 持续对话不按每次回复创建新 chat。
+UI 使用当前 Python 解释器启动 `python -u -m backend`，无需单独启动服务。backend 完成配置和存储初始化后发送 ready 通知，再恢复待处理结果与记忆加工调度。
 
-工具调用在执行前作为消息保存，结果消息外键关联原调用；稳定 operation_key 直接保存在调用消息上。去重和恢复从消息派生，不另设操作表。缺结果的调用在模型上下文中作为未知事实说明，完整原记录仍可查询。
+隐藏到托盘不退出 backend。彻底退出时，UI 关闭 stdin，backend 取消生成与子执行、保存中断状态并结束记忆维护；未及时退出时 UI 依次终止和强制结束进程。后台异常退出后 UI 结束等待，允许用户手动重新连接，不自动重发已经发送的输入。
 
-通过 `ContextProvider.build(agent_id)` 留出记忆系统替换点；模型适配器仍只接收模型消息，不依赖数据库结构，人物和气泡只消费客户端信号。当前不做裁剪或摘要，超出上游上下文限制时明确报错。
-
-主 agent 可以通过内部 get_subagent 按需读取目标 subagent 的全部已存历史、工具参数/结果和在途调用；该查询不修改子 agent 的 turn 或执行状态，UI 不增加接口。字段、状态转换、文件位置和抽象接口见 [历史与记忆系统](HISTORY_MEMORY.md)。
-
-## 8. 后续演进
-
-本轮已按 [Agent 架构决策](AGENT_ARCHITECTURE.md) 加入异步委派、补充/取消、本地执行和结果回流。后续优先验证实际路由与交接质量，再考虑业务连接器、上下文容量和后台并发。
-
-记忆检索/摘要、历史界面和语音仍按实际需要演进。目标架构保持单一对外发言通道，不要求多条 assistant 消息同时输出。当前不支持跨设备同步或脱离 UI 的常驻 daemon。
-
-运行配置、测试命令及验证范围见 [CHAT_TESTING.md](CHAT_TESTING.md)。
-
-模型工具协议参照[方舟 Function Calling 文档](https://docs.volcengine.com/docs/ark/function-calling?lang=zh)：聚合流式 tool_calls 后调用内部工具，再用 tool_call_id 回填结果；模型适配器不承担语义路由。
+同一数据库通过文件锁限制为一个 backend 写入。第二个实例不能同时使用该历史库，测试必须指定临时数据库。启动恢复、未知外部动作与备份规则见 [存储事务与恢复](HISTORY_MEMORY.md#存储事务与恢复)。
