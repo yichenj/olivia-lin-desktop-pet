@@ -19,7 +19,10 @@ class FakeStream:
 
     async def __anext__(self):
         try:
-            return next(self.chunks)
+            item = next(self.chunks)
+            if isinstance(item, Exception):
+                raise item
+            return item
         except StopIteration:
             raise StopAsyncIteration
 
@@ -36,6 +39,21 @@ def client_with(stream):
 
 
 class ArkModelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mid_stream_transport_failure_is_classified_and_closed(self):
+        for error, code in ((httpx.ReadTimeout('PRIVATE_PROVIDER_TEXT'), 'model_timeout'),
+                            (httpx.RemoteProtocolError('PRIVATE_PROVIDER_TEXT'), 'model_connection')):
+            stream = FakeStream([chunk('部分正文'), error])
+            client = client_with(stream)
+            pieces = []
+            with patch('openai.AsyncOpenAI', return_value=client), self.assertRaises(ModelError) as caught:
+                async for piece in ArkModel(Config(api_key='placeholder', base_url='https://example.invalid', model='test')).stream([]):
+                    pieces.append(piece.text)
+            self.assertEqual(pieces, ['部分正文'])
+            self.assertEqual(caught.exception.code, code)
+            self.assertNotIn('PRIVATE_PROVIDER_TEXT', str(caught.exception))
+            self.assertTrue(stream.closed)
+            client.close.assert_awaited_once()
+
     async def test_empty_choices_and_text_stream_cleanup(self):
         stream = FakeStream([SimpleNamespace(usage=None, choices=[]), chunk("你好"), chunk(finish="stop")])
         client = client_with(stream)

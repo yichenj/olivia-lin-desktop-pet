@@ -34,7 +34,7 @@ macOS 执行 `./scripts/setup_macos.sh` 安装依赖，随后双击 `Start.comma
 
 macOS 默认数据库位于 `~/Library/Application Support/Olivia Lin Fan Pet/chat.sqlite3`；Linux 位于 `${XDG_DATA_HOME:-~/.local/share}/olivia-desktop-pet/chat.sqlite3`。记忆目录为数据库旁的 `<数据库文件名>.memory/`，由 CURRENT 指向完整发布版本。
 
-原始历史始终保留，旧记忆版本暂不自动清理。备份应在 backend 停止后同时保存数据库和记忆目录，保持二者绑定。不要直接编辑已发布版本，文件校验失败会阻止加载。
+原始历史始终保留，旧记忆版本暂不自动清理。备份应在 backend 停止后同时保存数据库和记忆目录，恢复到原数据库路径；绑定包含数据库绝对路径，移动或重命名不会自动重绑定。不要直接编辑已发布版本，文件校验失败会阻止加载。
 
 同一数据库只允许一个 backend 写入。开发与测试使用独立临时数据库，不连接正式历史。项目不提供旧结构迁移；遇到不兼容的开发库，应先备份再选择新路径，程序不会自动清空历史。
 
@@ -77,7 +77,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 | --- | --- |
 | `tests/test_agent_history.py`、`test_agent_tool_messages.py` | agent 归属、turn、事务、工具配对、稳定键与未知结果 |
 | `tests/test_agent_runtime.py`、`test_agent_result_timer.py` | 委派、补充、取消、后台执行、主动回流、暂缓与输入竞争 |
-| `tests/test_memory.py` | 增量内存视图、提炼范围、固定批次、文件版本、约定、按需读取和容量等待 |
+| `tests/test_memory.py`、`test_memory_compiler.py` | 增量内存视图、固定批次、发布恢复、读取与容量等待；加工回执、读后修改、入链维护、拆分合并及来源约束 |
 | `tests/test_backend.py`、`test_backend_transport.py` | 连续输入、JSONL、流式通知、进程退出与重启 |
 | `tests/test_ark_model.py`、`test_config.py` | 模型流解析、错误分类、工具调用和配置校验 |
 | `tests/test_chat_ui.py` | QProcess 到气泡的离屏链路、迟到片段、阅读、隐藏与展开 |
@@ -104,6 +104,18 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 ```
 
 agent 冒烟在临时目录执行真实 shell 并检查文件产物、子执行状态、结果投递和流式输出。记忆冒烟检查带来源的页面、磁盘重载、read_memory / read_raw 调用以及回答正确性。脚本输出通过/失败信息，不打印 API key 或完整模型请求。
+
+## 记忆维护评估
+
+```bash
+.venv/bin/python scripts/eval_memory.py --live
+```
+
+该脚本使用本地模型配置，在临时数据库中连续加工三批合成资料：用户沟通偏好、项目与负责人及事件；人物别名、改期和助手猜测；偏好纠正和项目结束。随后重载文件、沿索引查页并核对原话，再验证停用来源仍有原始留底。
+
+程序检查稳定页面复用、跨分类链接、当前信息与历史变化、hot 更新、来源停用及召回答案中的必要事实。原文核对还要求实际调用 read_raw 并成功返回消息，不能以页面带来源链接或答案正确代替读取。输出保存在被 Git 忽略的 output/reviews/，包含各批 Markdown、合成原文、模型请求/工具结果及报告，便于检查误归纳和遗漏。运行失败不计为语义通过；关键词检查也不能证明整段答案正确，须复核否定、时间条件及引用依据。
+
+可控模型的拆分/合并测试证明文件协议和导航可以完成相应操作，不证明真实模型能在复杂资料中自行做出正确划分。长期、多主题的准确率、稳定性和成本需要独立样本集评估。
 
 ## 原生 UI 与预览
 
@@ -132,7 +144,8 @@ UI 冒烟打开测试人物窗口，在首段正文后追加输入，检查重�
 | 尚需专门验证的范围 | 现有证据的边界 |
 | --- | --- |
 | 补充、撤回和多目标指代的语义准确率 | 可控模型验证运行时行为，真实样本未形成系统评测 |
-| 长期事实修订、矛盾消解和跨页关联 | 单次合成记忆召回通过，尚无多主题长期质量数据 |
+| 长期事实修订、矛盾消解和跨页关联 | 三批合成场景有通过样本；通过结构测试或一次召回不代表长期语义质量，尚无多主题长期质量数据 |
+| 多问题召回时的原文核对 | 已观察到模型只读页面却声称核对原话；此时 read_raw 检查判失败。来源 ID 和提示规则不能保证模型继续读取 |
 | 大规模积压的延迟、调用成本与 token 使用 | 有容量和等待边界测试，没有规模化基准 |
 | 文件系统断电耐久性 | 发布异常注入及协程取消已有覆盖，未做真实断电实验 |
 | 外部动作的崩溃一致性 | 调用凭据保留未知结果，不提供跨进程外部副作用 exactly-once 保证 |

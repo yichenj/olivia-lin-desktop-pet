@@ -53,7 +53,7 @@ pet.py                         Application, activity scheduler and input UI
 backend_client.py              Qt JSON-RPC client and backend process lifecycle
 speech_bubble.py               Streaming comic-style reply window
 backend/                       Service, agent loop, context, SQLite, Markdown memory, Ark adapter
-prompts/olivia.md               Editable character system prompt
+prompts/                       Character prompt and memory maintenance policy
 mac_hotkey.py                  macOS hidden-window restore shortcut
 run.sh                         Shared macOS/Linux launch entry point
 Start.command                  Finder double-click launcher
@@ -102,7 +102,7 @@ The retired GIF and its generation scripts remain recoverable from Git history. 
 QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -v
 ```
 
-These tests check activity scheduling, manual pose persistence, text entry, pixel-level blink/pose regressions, notes and launcher interpreter/path selection. Native-only tests also exercise Carbon hotkey registration, conflict cleanup and event dispatch. On macOS, use `.venv/bin/python` in place of `python3`. Use `QT_QPA_PLATFORM=cocoa .venv/bin/python -m unittest discover -s tests -v` on a Mac desktop to run the same suite against native Qt windows. The offscreen suite alone does not validate desktop integration. See [macOS validation](docs/MACOS.md) for the native checks and remaining limits.
+These tests check continuous dialogue, background execution, memory publication, transport, UI streaming, activity scheduling, pixel-level blink/pose regressions and launcher interpreter/path selection. Native-only tests also exercise Carbon hotkey registration, conflict cleanup and event dispatch. On macOS, use `.venv/bin/python` in place of `python3`. Use `QT_QPA_PLATFORM=cocoa .venv/bin/python -m unittest discover -s tests -v` on a Mac desktop to run the same suite against native Qt windows. The offscreen suite alone does not validate desktop integration. See [macOS validation](docs/MACOS.md) for the native checks and remaining limits.
 
 ## Portrait provenance and references
 

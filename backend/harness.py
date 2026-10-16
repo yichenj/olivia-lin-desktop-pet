@@ -26,6 +26,7 @@ class ArkModel:
         if missing:
             raise ModelError("missing_model_config", "请在本地配置中填写 " + "、".join(missing) + " 后重新启动桌宠。")
         from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError
+        from httpx import TimeoutException, TransportError
         client = AsyncOpenAI(api_key=self.config.api_key, base_url=self.config.base_url,
                              timeout=60.0, max_retries=0)
         response = None
@@ -64,9 +65,10 @@ class ArkModel:
                 raise ModelError("stream_interrupted", "连接提前结束，回复尚未完成。")
             if calls:
                 yield StreamPiece(tool_calls=[calls[i] for i in sorted(calls)])
-        except APITimeoutError:
+        # Once SSE headers arrive, httpx stream errors can bypass SDK wrapping.
+        except (APITimeoutError, TimeoutException):
             raise ModelError("model_timeout", "模型响应超时，请稍后重试。") from None
-        except APIConnectionError:
+        except (APIConnectionError, TransportError):
             raise ModelError("model_connection", "暂时连接不上模型，请检查网络后重试。") from None
         except APIStatusError as error:
             status = error.status_code
@@ -92,13 +94,17 @@ class MockModel:
     async def stream(self, messages, **options):
         if any(t['function']['name'] == 'write_memory' for t in options.get('tools', [])):
             # Deterministic file compilation for offline wiring tests only.
-            if messages[-1]['role'] == 'tool':
-                yield StreamPiece(text='模拟记忆已保存。')
-                return
             data = json.loads(messages[1]['content'])
+            if messages[-1]['role'] == 'tool':
+                yield StreamPiece(tool_calls=[{'id': 'mock-memory-complete', 'type': 'function', 'function': {
+                    'name': 'complete_memory', 'arguments': json.dumps({
+                        'retained_message_ids': [m['id'] for m in data['raw']], 'ignored_message_ids': [],
+                        'summary': '确定性模拟编译，仅验证调用链路。'})}}])
+                return
             page = 'events/' + data['raw'][0]['id'] + '.md'
-            content = '# 模拟记忆\n' + '\n'.join(
+            content = '# 模拟记忆\n\n## 当前信息\n' + '\n'.join(
                 m['content'][:120] + f" [来源](raw:message/{m['id']})" for m in data['raw'])
+            content += '\n\n## 变化与待确认\n无\n\n## 关联\n无\n\n## 来源\n见上文来源。\n'
             edits = [(page, content), ('index.md', data['index'] + f'\n- [模拟对话]({page})')]
             yield StreamPiece(tool_calls=[{'id': f'mock-memory-{i}', 'type': 'function', 'function': {
                 'name': 'write_memory', 'arguments': json.dumps({'path': path, 'content': text}, ensure_ascii=False)}}

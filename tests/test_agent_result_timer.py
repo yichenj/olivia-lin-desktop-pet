@@ -249,6 +249,7 @@ class ResultTimerTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(action=action):
                 event = self.result(after=60)
                 turn, draft = self.store.begin('处理结果', 'test')
+                self.runtime.observe(turn, self.context.build(1, turn=turn))
                 tool_call = {'id': action, 'type': 'function', 'function': {
                     'name': 'handle_subagent_results', 'arguments': json.dumps({
                         'message_ids': [event['message_id']], 'action': action, 'delay_seconds': 0})}}
@@ -261,3 +262,20 @@ class ResultTimerTests(unittest.IsolatedAsyncioTestCase):
                 if action == 'defer':
                     self.assertFalse(decisions)
                     self.assertIn('invalid_tool_arguments', self.store.all_messages()[-1]['content'])
+
+    async def test_result_arriving_after_request_must_be_observed_before_deciding(self):
+        current = await self.start_input()
+        event = self.result(after=-1)
+        args = {'message_ids': [event['message_id']], 'action': 'suppress', 'delay_seconds': 0}
+        # Merely building a possible context does not mean the model received it.
+        context = self.context.build(1, turn=current.number)
+        self.assertIn(event['message_id'], context.observed_results)
+        with self.assertRaisesRegex(ValueError, 'result_not_observed'):
+            self.runtime.control(current.number, 'handle_subagent_results', args)
+        self.assertNotIn(current.number, self.runtime.decisions)
+        self.assertEqual(self.store.events()[0]['message_id'], event['message_id'])
+        self.runtime.observe(current.number, context)
+        self.runtime.control(current.number, 'handle_subagent_results', args)
+        self.model.release.set()
+        await current.task
+        self.assertFalse(self.store.events())

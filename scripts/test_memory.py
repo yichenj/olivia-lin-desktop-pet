@@ -81,7 +81,7 @@ def main():
             print(f'FAIL: {type(error).__name__}: {getattr(error, "code", "memory_smoke_failed")}', file=sys.stderr)
             return 1
     else:
-        result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover(str(ROOT / 'tests'), pattern='test_memory.py'))
+        result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover(str(ROOT / 'tests'), pattern='test_memory*.py'))
         return 0 if result.wasSuccessful() else 1
     return 0
 

@@ -16,6 +16,7 @@ from .errors import ModelError
 RAW_LINK = re.compile(r'raw:message/([a-f0-9]{32})')
 LINK = re.compile(r'\[[^\]\n]*\]\(([^)\s]+)\)')
 REQUIRED = {'hot.md', 'index.md', 'policies.md'}
+SPECIAL = REQUIRED | {'log.md'}
 MAX_PAGE_BYTES = 16000
 MAX_FILES = 1000
 
@@ -162,7 +163,7 @@ class MemoryStore:
             refs = set(RAW_LINK.findall(content))
             if refs - sources or (path != 'policies.md' and refs & blocked_ids):
                 raise ValueError('invalid_memory_source')
-            if path not in REQUIRED and not path.endswith('/index.md') and not refs:
+            if path not in SPECIAL and not path.endswith('/index.md') and not refs:
                 raise ValueError('memory_page_missing_source')
             edges[path] = []
             for target in LINK.findall(content):
@@ -177,7 +178,7 @@ class MemoryStore:
             if path not in reached:
                 reached.add(path)
                 queue.extend(edges[path])
-        if set(files) - REQUIRED - reached:
+        if set(files) - SPECIAL - reached:
             raise ValueError('orphan_memory_page')
 
     def publish(self, base, files, processed, policies, sources):

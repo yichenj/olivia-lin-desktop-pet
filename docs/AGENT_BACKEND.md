@@ -45,7 +45,7 @@ flowchart LR
 | `backend/local_tools.py` | 异步文件操作、shell 进程组、超时和输出限制 |
 | `backend/storage.py` | SQLite 事务、消息内存视图、检查点与恢复 |
 | `backend/memory.py` | 记忆快照、受限读取、文件校验和完整版本发布 |
-| `backend/memory_worker.py` | 主对话异步加工、批次调度和记忆约定 |
+| `backend/memory_worker.py`、`prompts/memory_compiler.md` | 主对话加工调度、发布校验与知识维护规则 |
 | `backend/config.py`、`prompts/olivia.md` | 本地配置与角色提示词 |
 
 后端模块通过普通接口协作，只有 UI 与 backend 之间跨进程通信。SQLite 和记忆目录都是本地存储，不是独立服务。
@@ -102,7 +102,7 @@ API key、base URL 和 model / endpoint 统一读取被 Git 忽略的本地配�
 | 人物隐藏或最小化 | 结果不强行显示人物 |
 | 用户正在阅读旧内容 | 新文字暂存，阅读结束后再展示 |
 | 正常自动收起后到达主动回复 | 人物可见时允许显示新回复 |
-| 模型失败或中断 | 保留已有文字并显示失败状态 |
+| 模型失败或中断 | 气泡保留已有文字，卡片显示错误；无正文时气泡展示错误说明 |
 | 输入受理失败 | 恢复输入草稿；用户可以编辑后重试 |
 
 主动生成、回复持久化和用户看见内容是三个不同事件。UI 可见性不会改变业务执行或结果投递状态，backend 也不把 report 当作已读确认。

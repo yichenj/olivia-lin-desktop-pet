@@ -5,6 +5,7 @@ import time
 
 from .agent_tools import available_tools, validate_call
 from .harness import ModelError
+from .memory import RAW_LINK
 
 
 class AgentRuntime:
@@ -109,7 +110,9 @@ class AgentRuntime:
                     result = await self.harness.compiler.set_policy(args)
                 elif name == 'read_memory':
                     snapshot = self.memory_snapshots.get(turn, memory.snapshot())
-                    result = {'path': args['path'], 'content': memory.read(snapshot, args['path'])}
+                    content = memory.read(snapshot, args['path'])
+                    result = {'path': args['path'], 'content': content, 'content_kind': 'compiled_memory',
+                              'source_message_ids': sorted(set(RAW_LINK.findall(content)))}
                 else:
                     result = memory.read_raw(args['message_ids'], args.get('archive_source_message_id'))
                 if name != 'set_memory_policy':
@@ -184,6 +187,8 @@ class AgentRuntime:
             events = {e['message_id'] for e in self.store.events()}
             if not set(args['message_ids']) <= events:
                 raise ValueError('stale_result')
+            if not set(args['message_ids']) <= self.observed_results.get(turn, set()):
+                raise ValueError('result_not_observed')
             decisions = self.decisions.setdefault(turn, {})
             for mid in args['message_ids']:
                 decisions[mid] = (args['action'], args['delay_seconds'] if args['action'] == 'defer' else 0)

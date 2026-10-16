@@ -32,10 +32,12 @@ class CompilingModel:
 
     async def stream(self, messages, **options):
         if any(t['function']['name'] == 'write_memory' for t in options.get('tools', [])):
-            if messages[-1]['role'] == 'tool':
-                yield StreamPiece(text='加工完成')
-                return
             data = json.loads(messages[1]['content'])
+            if messages[-1]['role'] == 'tool':
+                yield StreamPiece(tool_calls=[call('complete_memory',
+                    retained_message_ids=[data['raw'][0]['id']],
+                    ignored_message_ids=[m['id'] for m in data['raw'][1:]], summary='固定测试页面；其他消息不提炼。')])
+                return
             self.batches.append(data['raw'])
             self.entered.set()
             if self.release:
@@ -43,7 +45,7 @@ class CompilingModel:
             mid = data['raw'][0]['id']
             page = f'events/{mid}.md'
             yield StreamPiece(tool_calls=[
-                call('write_memory', path=page, content=f'# 工作偏好\n先讨论边界。\n[原话](raw:message/{mid})'),
+                call('write_memory', path=page, content=f'# 工作偏好\n\n## 当前信息\n先讨论边界。\n[原话](raw:message/{mid})\n\n## 变化与待确认\n无\n\n## 关联\n无\n\n## 来源\n见上文。\n'),
                 call('write_memory', path='index.md', content=data['index'] + f'\n- [工作偏好]({page})'),
                 call('write_memory', path='hot.md', content=f'用户希望先明确边界。见[工作偏好]({page})')])
         else:
@@ -271,7 +273,10 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
                 if len(seen) == 1:
                     yield StreamPiece(tool_calls=[call('read_memory', path=page)])
                 elif len(seen) == 2:
-                    yield StreamPiece(tool_calls=[call('read_raw', message_ids=[rows[0]['id']])])
+                    page_result = json.loads(next(m['content'] for m in reversed(messages) if m['role'] == 'tool'))
+                    if page_result['content_kind'] != 'compiled_memory':
+                        raise AssertionError('Page must be distinguished from original messages')
+                    yield StreamPiece(tool_calls=[call('read_raw', message_ids=page_result['source_message_ids'])])
                 else:
                     yield StreamPiece(text='你希望先明确边界。')
         self.loop.model = RecallModel()
