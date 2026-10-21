@@ -29,7 +29,8 @@ async def live():
         store = HistoryStore(root / 'chat.sqlite3')
         memory = MemoryStore(store)
         model = ArkModel(config)
-        compiler = MemoryCompiler(store, memory, model, interval=3600, retries=2)
+        # Exercise compilation/recall with a fixed fixture, without waiting for it to age out.
+        compiler = MemoryCompiler(store, memory, model, interval=3600, retries=2, recent_messages=0)
         context = HistoryContextProvider(store, '你是 Olivia，和用户持续交流。根据工具证据回答，不编造记忆。', memory, recent_messages=1)
         loop = AgentLoop(context, model, compiler=compiler)
         AgentRuntime(store, context, loop, LocalTools(root, False), config.model)

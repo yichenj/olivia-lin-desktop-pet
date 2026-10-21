@@ -1,4 +1,5 @@
 """Compiler publication requires an explicit, grounded maintenance receipt."""
+import asyncio
 import json
 from pathlib import Path
 import tempfile
@@ -43,7 +44,7 @@ class CompilerContractTests(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.store = HistoryStore(Path(self.directory.name) / 'chat.sqlite3')
         self.memory = MemoryStore(self.store)
-        self.compiler = MemoryCompiler(self.store, self.memory, None, interval=3600, retries=1)
+        self.compiler = MemoryCompiler(self.store, self.memory, None, interval=3600, retries=1, recent_messages=0)
 
     async def asyncTearDown(self):
         await self.compiler.close()
@@ -82,6 +83,71 @@ class CompilerContractTests(unittest.IsolatedAsyncioTestCase):
             await self.compiler.wait()
         self.assertEqual(self.memory.snapshot().version, '')
         self.assertEqual(self.compiler.pending(), rows)
+
+    async def test_each_model_call_has_its_own_timeout(self):
+        rows = self.say('先说结论。')
+        requests = []
+
+        class SlowCalls:
+            async def stream(self, messages, **options):
+                requests.append(options)
+                await asyncio.sleep(.09)
+                if len(requests) == 1:
+                    yield StreamPiece(tool_calls=[call('read_memory', path='index.md')])
+                else:
+                    yield StreamPiece(tool_calls=[complete(rows)])
+
+        self.compiler.model = SlowCalls()
+        self.compiler.timeout = .15
+        await self.compiler.wait()
+        self.assertEqual(len(requests), 2)
+        self.assertTrue(all(o['timeout'] == .15 for o in requests))
+        self.assertEqual(set(self.memory.snapshot().processed), {m['id'] for m in rows})
+        self.assertEqual(self.store.all_messages(), rows)
+
+    async def test_timeout_closes_stream_and_retries_the_same_batch(self):
+        rows = self.say('先说结论。') + self.say('再解释理由。')
+        batches, closed = [], []
+
+        class SlowFirstCall:
+            async def stream(self, messages, **options):
+                batch = json.loads(messages[1]['content'])['raw']
+                batches.append([m['id'] for m in batch])
+                try:
+                    if len(batches) == 1:
+                        # Continuous chunks must not reset the call deadline.
+                        for _ in range(100):
+                            await asyncio.sleep(.005)
+                            yield StreamPiece(text='加工中')
+                    yield StreamPiece(tool_calls=[complete(batch)])
+                finally:
+                    closed.append(True)
+
+        self.compiler.model = SlowFirstCall()
+        self.compiler.timeout = .05
+        self.compiler.retries = 2
+        await self.compiler.wait()
+        self.assertEqual(batches, [[m['id'] for m in rows]] * 2)
+        self.assertEqual(len(closed), 2)
+        self.assertEqual(self.compiler.batch_bytes, 16000)
+        self.assertFalse(self.compiler.pending())
+
+    async def test_timeout_preserves_all_pending_rows(self):
+        rows = self.say('先说结论。')
+
+        class Stalled:
+            async def stream(self, messages, **options):
+                await asyncio.sleep(1)
+                yield StreamPiece()
+
+        self.compiler.model = Stalled()
+        self.compiler.timeout = .02
+        with self.assertRaises(ModelError):
+            await self.compiler.wait()
+        self.assertEqual(self.compiler.last_error, 'memory_model_call_timeout')
+        self.assertFalse(self.memory.snapshot().version)
+        self.assertEqual(self.compiler.pending(), rows)
+        self.assertEqual(self.compiler.batch_bytes, 16000)
 
     async def test_incomplete_receipt_is_repaired_before_publication(self):
         rows = self.say('哈哈，收到。')

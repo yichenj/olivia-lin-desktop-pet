@@ -29,7 +29,9 @@ class Config:
     context_token_budget: int = 64000
     memory_interval_seconds: int = 60
     memory_threshold_bytes: int = 16000
-    memory_recent_messages: int = 12
+    memory_recent_messages: int = 50
+    memory_model_timeout_seconds: int = 300
+    memory_wait_timeout_seconds: int = 1800
 
 
 def load_config():
@@ -69,4 +71,6 @@ def load_config():
         memory_interval_seconds=integer('memory_interval_seconds', defaults.memory_interval_seconds, 1, 3600),
         memory_threshold_bytes=integer('memory_threshold_bytes', defaults.memory_threshold_bytes, 1000, 1000000),
         memory_recent_messages=integer('memory_recent_messages', defaults.memory_recent_messages, 1, 100),
+        memory_model_timeout_seconds=integer('memory_model_timeout_seconds', defaults.memory_model_timeout_seconds, 1, 3600),
+        memory_wait_timeout_seconds=integer('memory_wait_timeout_seconds', defaults.memory_wait_timeout_seconds, 1, 14400),
     )

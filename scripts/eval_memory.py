@@ -58,7 +58,8 @@ async def evaluate(output):
     with tempfile.TemporaryDirectory(prefix='olivia-memory-eval-') as directory:
         store = HistoryStore(Path(directory) / 'chat.sqlite3')
         memory = MemoryStore(store)
-        compiler = MemoryCompiler(store, memory, model, interval=3600)
+        # Evaluate maintenance quality independently of the production retention window.
+        compiler = MemoryCompiler(store, memory, model, interval=3600, recent_messages=0)
         context = HistoryContextProvider(store, '你是 Olivia。按记忆与原文回答，分清已确认事实和猜测。', memory, recent_messages=1)
         loop = AgentLoop(context, model, compiler=compiler)
         AgentRuntime(store, context, loop, LocalTools(Path(directory), False), 'synthetic-evaluation')

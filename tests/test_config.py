@@ -17,6 +17,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual((config.api_key, config.base_url, config.model), ("", "", ""))
         self.assertEqual(Config().base_url, "")
         self.assertEqual(Config().model, "")
+        self.assertEqual(config.memory_model_timeout_seconds, 300)
+        self.assertEqual(config.memory_wait_timeout_seconds, 1800)
+
+    def test_memory_timeouts_are_configurable_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'local.json'
+            with patch.dict(os.environ, {'OLIVIA_CONFIG': str(path)}, clear=True):
+                path.write_text(json.dumps({'memory_model_timeout_seconds': 600,
+                                            'memory_wait_timeout_seconds': 3600}))
+                config = load_config()
+                self.assertEqual(config.memory_model_timeout_seconds, 600)
+                self.assertEqual(config.memory_wait_timeout_seconds, 3600)
+                for key in ('memory_model_timeout_seconds', 'memory_wait_timeout_seconds'):
+                    for value in (True, 0, 100000, '300'):
+                        path.write_text(json.dumps({key: value}))
+                        with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                            load_config()
 
     def test_key_url_and_model_are_read_together_with_environment_overrides(self):
         values = {"api_key": "local-test-key", "base_url": "https://example.invalid/local", "model": "local-model"}

@@ -5,11 +5,14 @@ import json
 import re
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .agent_tools import tool, TEXT, validate_call
 from .errors import ModelError
+from .diagnostics import event, error_code, log_context
+from .history_window import history_window, unprocessed_dialogue
 from .memory import RAW_LINK, LINK, REQUIRED, SPECIAL, linked_path, memory_path, fingerprint, token_size
 
 COMPILER_TOOLS = [
@@ -82,10 +85,11 @@ def compilation_log(previous, rows, receipt, changed, now):
 
 class MemoryCompiler:
     def __init__(self, store, memory, model, *, interval=60, threshold=16000,
-                 batch_bytes=16000, input_budget=64000, timeout=180, retries=2):
+                 batch_bytes=16000, input_budget=64000, timeout=300, retries=2, recent_messages=50):
         self.store, self.memory, self.model = store, memory, model
         self.interval, self.threshold, self.batch_bytes = interval, threshold, batch_bytes
         self.input_budget, self.timeout, self.retries = input_budget, timeout, retries
+        self.recent_messages = recent_messages
         self.task = None
         self.timer = None
         self.closed = False
@@ -96,10 +100,8 @@ class MemoryCompiler:
     def pending(self):
         snapshot = self.memory.snapshot()
         payloads = self.store.payloads()
-        return [m for m in self.store.all_messages() if m['agent_id'] == 1 and m['status'] == 'completed'
-                and m['role'] in ('user', 'assistant') and m['id'] not in payloads
-                and m['id'] not in snapshot.blocked_ids
-                and snapshot.processed.get(m['id']) != fingerprint(m)]
+        window = history_window(self.store.all_messages(), payloads, self.recent_messages, snapshot.blocked_ids)
+        return unprocessed_dialogue(window.older, payloads, snapshot)
 
     def schedule(self):
         if self.closed or (self.task and not self.task.done()):
@@ -114,6 +116,7 @@ class MemoryCompiler:
                 return
             self.timer.cancel()
         self.timer = asyncio.get_running_loop().call_later(delay, self.request)
+        event('memory_scheduled', pending_messages=len(pending), delay_seconds=round(delay, 3))
 
     def request(self):
         if self.timer:
@@ -138,9 +141,7 @@ class MemoryCompiler:
     async def wait(self):
         # Cancelling a foreground waiter must not cancel the shared compiler.
         try:
-            return await asyncio.wait_for(asyncio.shield(self.request()), self.timeout * self.retries + 10)
-        except asyncio.TimeoutError:
-            raise ModelError('memory_timeout', '整理记忆超时，原始对话已保存，请稍后继续。') from None
+            return await asyncio.shield(self.request())
         except (ValueError, OSError):
             raise ModelError('memory_compile_failed', '记忆整理暂未完成，原始对话已保存。') from None
 
@@ -154,6 +155,17 @@ class MemoryCompiler:
             raise
 
     async def _run(self):
+        with log_context(compilation_id=uuid.uuid4().hex):
+            try:
+                return await self._compile_batch()
+            except asyncio.CancelledError:
+                event('memory_cancelled')
+                raise
+            except Exception as error:
+                event('memory_failed', reason=error_code(error))
+                raise
+
+    async def _compile_batch(self):
         rows, size = [], 0
         for row in self.pending():
             cost = token_size(row)
@@ -163,34 +175,60 @@ class MemoryCompiler:
             size += cost
         if not rows:
             return False
+        event('memory_batch_started', messages=len(rows), input_bytes=size,
+              model_timeout_seconds=self.timeout)
         for attempt in range(self.retries):
             base = self.memory.snapshot()
-            rows = [m for m in rows if m['id'] not in base.blocked_ids]
+            eligible = {m['id'] for m in self.pending()}
+            rows = [m for m in rows if m['id'] in eligible]
             if not rows:
                 return False
+            started = time.monotonic()
+            event('memory_attempt_started', attempt=attempt + 1, messages=len(rows))
             try:
-                files, sources = await asyncio.wait_for(self.compile(base, rows), self.timeout)
+                with log_context(attempt=attempt + 1):
+                    files, sources = await self.compile(base, rows)
                 async with self.lock:
                     if base.version != self.memory.snapshot().version:
+                        event('memory_candidate_stale', reason='version_changed')
                         continue
                     if any(not self.store.message(m['id']) or fingerprint(self.store.message(m['id'])) != fingerprint(m) for m in rows):
+                        event('memory_candidate_stale', reason='source_changed')
+                        continue
+                    eligible = {m['id'] for m in self.pending()}
+                    if any(m['id'] not in eligible for m in rows):
+                        event('memory_candidate_stale', reason='retention_boundary_changed')
                         continue
                     processed = dict(base.processed)
                     processed.update({m['id']: fingerprint(m) for m in rows})
                     await self._publish(base, files, processed, base.policies, sources)
+                event('memory_published', attempt=attempt + 1, messages=len(rows),
+                      page_count=len(files), elapsed_seconds=round(time.monotonic() - started, 3),
+                      version=self.memory.snapshot().version)
                 self.last_error, self.retry_at = None, 0
                 return True
             except asyncio.CancelledError:
                 raise
             except (ValueError, OSError, ModelError, asyncio.TimeoutError) as error:
-                reason = getattr(error, 'code', type(error).__name__)
-                if type(error) is ValueError and re.fullmatch(r'[a-z_]+', str(error)):
-                    reason = str(error)
+                reason = error_code(error)
                 self.last_error = reason
+                event('memory_attempt_failed', attempt=attempt + 1, reason=reason,
+                      elapsed_seconds=round(time.monotonic() - started, 3))
                 print(f'Memory compilation attempt {attempt + 1} failed: {reason}', file=sys.stderr, flush=True)
                 if attempt + 1 == self.retries:
                     raise ModelError('memory_compile_failed', '记忆整理暂未完成，原始对话已保存。') from None
         raise ModelError('memory_conflict', '记忆约定正在更新，请稍后继续。')
+
+    async def _model_calls(self, messages):
+        calls, length = [], 0
+        async with aclosing(self.model.stream(messages, tools=COMPILER_TOOLS,
+                                              thinking='enabled', timeout=self.timeout)) as stream:
+            async for piece in stream:
+                length += len(piece.text)
+                if length > 20000:
+                    raise ValueError('memory_compiler_output_limit')
+                calls.extend(piece.tool_calls or [])
+        return calls
 
     async def compile(self, base, rows):
         files = dict(base.files)
@@ -207,26 +245,32 @@ class MemoryCompiler:
                         {key: row[key] for key in ('id', 'seq', 'agent_id', 'turn', 'role', 'status', 'content', 'created_at')}
                         for row in rows], 'index': files['index.md'],
                        'hot': files['hot.md'], 'policies': files['policies.md'], 'now': now}, ensure_ascii=False)}]
-        for _ in range(16):
+        for iteration in range(1, 17):
             if token_size(messages) + token_size(COMPILER_TOOLS) > self.input_budget:
                 raise ValueError('memory_compiler_context_limit')
             # A read in this response is not evidence seen by the model that
             # produced its other calls. Adopt those results on the next request.
             visible_pages, visible_sources = set(read_pages), set(read_sources)
-            calls, length = [], 0
-            async with aclosing(self.model.stream(messages, tools=COMPILER_TOOLS, thinking='enabled')) as stream:
-                async for piece in stream:
-                    length += len(piece.text)
-                    if length > 20000:
-                        raise ValueError('memory_compiler_output_limit')
-                    calls.extend(piece.tool_calls or [])
+            started = time.monotonic()
+            with log_context(iteration=iteration):
+                event('memory_model_call_started')
+                try:
+                    calls = await asyncio.wait_for(self._model_calls(messages), self.timeout)
+                except asyncio.TimeoutError:
+                    event('memory_model_call_timeout', timeout_seconds=self.timeout)
+                    raise ModelError('memory_model_call_timeout', '记忆加工的本次模型调用超时。') from None
+                finally:
+                    event('memory_model_call_finished', elapsed_seconds=round(time.monotonic() - started, 3))
             if not calls:
                 messages.append({'role': 'system', 'content':
                     '加工尚未提交。请完成文件维护并调用 complete_memory；普通结束文本不会推进加工进度。'})
                 continue
             for call in calls:
+                name = 'invalid'
                 try:
                     name, args = validate_call(call, COMPILER_TOOLS)
+                    event('memory_tool_started', iteration=iteration, tool=name,
+                          content_bytes=len(args.get('content', '').encode()))
                     if name == 'complete_memory':
                         if call is not calls[-1]:
                             raise ValueError('complete_memory_must_be_last')
@@ -234,6 +278,7 @@ class MemoryCompiler:
                         changed = {p for p in set(base.files) | set(files) if base.files.get(p) != files.get(p)}
                         files['log.md'] = compilation_log(files.get('log.md', ''), rows, args, changed, now)
                         self.memory.validate(files, sources, base.blocked_ids)
+                        event('memory_tool_completed', iteration=iteration, tool=name)
                         return files, sources
                     elif name == 'read_memory':
                         path = memory_path(args['path'])
@@ -265,7 +310,9 @@ class MemoryCompiler:
                                 raise ValueError('protected_memory_path')
                             files.pop(path, None)
                         result = {'saved': path}
+                    event('memory_tool_completed', iteration=iteration, tool=name)
                 except (ValueError, KeyError, TypeError) as error:
+                    event('memory_tool_rejected', iteration=iteration, tool=name, reason=error_code(error))
                     result = {'error': str(error) if isinstance(error, ValueError) else 'invalid_memory_operation',
                               'hint': '依据错误修复候选文件后重试；未提交前不会推进加工进度。'}
                 messages.extend([{'role': 'assistant', 'content': None, 'tool_calls': [call]},

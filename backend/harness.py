@@ -4,7 +4,9 @@ import json
 import time
 from contextlib import aclosing
 from dataclasses import dataclass
+import uuid
 from .context import ContextProvider, NeedsCompaction
+from .diagnostics import event
 from .errors import ModelError
 
 
@@ -19,7 +21,7 @@ class ArkModel:
     def __init__(self, config):
         self.config = config
 
-    async def stream(self, messages, *, tools=None, thinking=None):
+    async def stream(self, messages, *, tools=None, thinking=None, timeout=60.0):
         if not self.config.api_key.strip():
             raise ModelError("missing_api_key", "请在本地配置中填写 api_key 后重新启动桌宠。")
         missing = [name for name in ("base_url", "model") if not getattr(self.config, name).strip()]
@@ -28,24 +30,46 @@ class ArkModel:
         from openai import AsyncOpenAI, APIConnectionError, APITimeoutError, APIStatusError
         from httpx import TimeoutException, TransportError
         client = AsyncOpenAI(api_key=self.config.api_key, base_url=self.config.base_url,
-                             timeout=60.0, max_retries=0)
+                             timeout=timeout, max_retries=0)
         response = None
         finished = False
         calls = {}
+        request_id = uuid.uuid4().hex
+        started = time.monotonic()
+        chunks = text_chars = reasoning_chars = argument_chars = 0
+        last_chunk = None
+        first_tool = False
+        outcome = 'cancelled'
+        event('model_request_started', request_id=request_id, timeout_seconds=timeout,
+              input_bytes=len(json.dumps(messages, ensure_ascii=False).encode()),
+              tools_bytes=len(json.dumps(tools or [], ensure_ascii=False).encode()))
         try:
             response = await client.chat.completions.create(
                 model=self.config.model, messages=messages, stream=True,
                 extra_body={"thinking": {"type": thinking or self.config.thinking}},
                 **({'tools': tools} if tools else {}))
+            event('model_headers_received', request_id=request_id,
+                  elapsed_seconds=round(time.monotonic() - started, 3))
             async for chunk in response:
+                chunks += 1
+                last_chunk = time.monotonic()
+                if chunks == 1:
+                    event('model_first_chunk', request_id=request_id,
+                          elapsed_seconds=round(time.monotonic() - started, 3))
                 if chunk.usage:
                     yield StreamPiece(usage=chunk.usage.model_dump())
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
+                reasoning_chars += len(getattr(choice.delta, 'reasoning_content', None) or '')
                 if choice.delta.content:
+                    text_chars += len(choice.delta.content)
                     yield StreamPiece(text=choice.delta.content)
                 for delta in getattr(choice.delta, 'tool_calls', None) or []:
+                    if not first_tool:
+                        first_tool = True
+                        event('model_first_tool_chunk', request_id=request_id,
+                              elapsed_seconds=round(time.monotonic() - started, 3))
                     call = calls.setdefault(delta.index, {'id': '', 'type': 'function',
                                                          'function': {'name': '', 'arguments': ''}})
                     if delta.id:
@@ -53,6 +77,7 @@ class ArkModel:
                     if delta.function:
                         call['function']['name'] += delta.function.name or ''
                         call['function']['arguments'] += delta.function.arguments or ''
+                        argument_chars += len(delta.function.arguments or '')
                     if sum(len(c['function']['arguments']) for c in calls.values()) > 250000 or len(calls) > 16:
                         raise ModelError('tool_calls_too_large', '模型工具调用过大。')
                 if choice.finish_reason:
@@ -65,13 +90,17 @@ class ArkModel:
                 raise ModelError("stream_interrupted", "连接提前结束，回复尚未完成。")
             if calls:
                 yield StreamPiece(tool_calls=[calls[i] for i in sorted(calls)])
+            outcome = 'completed'
         # Once SSE headers arrive, httpx stream errors can bypass SDK wrapping.
         except (APITimeoutError, TimeoutException):
+            outcome = 'network_timeout'
             raise ModelError("model_timeout", "模型响应超时，请稍后重试。") from None
         except (APIConnectionError, TransportError):
+            outcome = 'connection_error'
             raise ModelError("model_connection", "暂时连接不上模型，请检查网络后重试。") from None
         except APIStatusError as error:
             status = error.status_code
+            outcome = f'http_{status}'
             body = str(getattr(error, 'body', '')).lower()
             if status in (400, 413) and any(code in body for code in
                     ('context_length', 'context window', 'maximum context', 'max_tokens', 'input too long')):
@@ -84,7 +113,18 @@ class ArkModel:
                 message = f"模型请求失败（HTTP {status}），请检查配置或稍后重试。"
             # Never forward provider exception strings, request headers or credentials.
             raise ModelError(f"model_http_{status}", message) from None
+        except ModelError as error:
+            outcome = error.code
+            raise
+        except Exception as error:
+            outcome = type(error).__name__
+            raise
         finally:
+            event('model_request_finished', request_id=request_id, outcome=outcome,
+                  elapsed_seconds=round(time.monotonic() - started, 3), chunks=chunks,
+                  text_chars=text_chars, reasoning_chars=reasoning_chars,
+                  tool_argument_chars=argument_chars, tool_calls=len(calls),
+                  idle_seconds=None if last_chunk is None else round(time.monotonic() - last_chunk, 3))
             if response is not None:
                 await response.close()
             await client.close()
@@ -127,7 +167,7 @@ class MockModel:
 
 class AgentLoop:
     def __init__(self, context: ContextProvider, model, *, compiler=None,
-                 token_budget=64000, active_timeout=300, memory_wait_timeout=370):
+                 token_budget=64000, active_timeout=300, memory_wait_timeout=1800):
         self.context, self.model, self.compiler = context, model, compiler
         self.token_budget, self.active_timeout = token_budget, active_timeout
         self.memory_wait_timeout = memory_wait_timeout

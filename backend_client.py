@@ -28,7 +28,7 @@ class BackendClient(QtCore.QObject):
                 env.insert(key, str(value))
             self.process.setProcessEnvironment(env)
         self.process.readyReadStandardOutput.connect(self._read)
-        self.process.readyReadStandardError.connect(lambda: self.process.readAllStandardError())
+        self.process.readyReadStandardError.connect(self._read_stderr)
         self.process.finished.connect(lambda *_: self._lost("聊天后台已退出，可重新连接后再发送。"))
         self.process.errorOccurred.connect(self._process_error)
         self.pending = {}
@@ -83,6 +83,12 @@ class BackendClient(QtCore.QObject):
             except (ValueError, TypeError, KeyError):
                 self._protocol_failure()
                 return
+
+    def _read_stderr(self):
+        diagnostic = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
+        if diagnostic:
+            sys.stderr.write(diagnostic)
+            sys.stderr.flush()
 
     def _dispatch(self, message):
         if "id" in message:

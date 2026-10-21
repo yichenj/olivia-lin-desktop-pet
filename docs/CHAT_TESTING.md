@@ -24,7 +24,9 @@ macOS 执行 `./scripts/setup_macos.sh` 安装依赖，随后双击 `Start.comma
 | — | `context_token_budget` | 64000，允许 8000–1000000 |
 | — | `memory_interval_seconds` | 60 秒，允许 1–3600 |
 | — | `memory_threshold_bytes` | 16000，允许 1000–1000000 |
-| — | `memory_recent_messages` | 12 条，允许 1–100 |
+| — | `memory_recent_messages` | 最近 50 条有效主对话保留原文、暂不加工，允许 1–100；工具不占条数，边界扩展到完整片段 |
+| — | `memory_model_timeout_seconds` | 每次记忆模型调用 300 秒，允许 1–3600 |
+| — | `memory_wait_timeout_seconds` | 主对话等待记忆的累计时限 1800 秒，允许 1–14400 |
 
 环境变量覆盖对应本地字段，不回写配置。主 agent 固定关闭思考，业务子 agent 和记忆加工开启思考。
 
@@ -38,19 +40,35 @@ macOS 默认数据库位于 `~/Library/Application Support/Olivia Lin Fan Pet/ch
 
 同一数据库只允许一个 backend 写入。开发与测试使用独立临时数据库，不连接正式历史。项目不提供旧结构迁移；遇到不兼容的开发库，应先备份再选择新路径，程序不会自动清空历史。
 
+### 运行日志
+
+backend 读取配置后自动将诊断写入数据库旁的 `<数据库文件名>.logs/backend.log`，每行一个 JSON 对象。命令行 `./run.sh`、双击 `Start.command` 和直接启动 backend 均使用该机制，无需重定向终端。重启追加记录；单文件达到约 5 MiB 时轮转，保留当前文件和 3 份历史文件。开发数据库使用自己的日志目录。
+
+macOS 默认日志路径为 `~/Library/Application Support/Olivia Lin Fan Pet/chat.sqlite3.logs/backend.log`。查看最近事件：
+
+```bash
+tail -n 100 "$HOME/Library/Application Support/Olivia Lin Fan Pet/chat.sqlite3.logs/backend.log"
+```
+
+日志时间为 UTC，包含进程 ID、记忆加工关联 ID、尝试次数、模型轮次和请求 ID。事件记录启动与退出、模型请求和首包耗时、流式输出字符数、工具调用名称、校验错误类别及发布版本，可区分网络超时、单次调用总时限和校验返工。日志不保存 API key、服务地址、模型标识、聊天正文、思考正文、工具参数或模型生成的文件路径；输入按字节、输出按字符计数，均不等于 token 数。需要内容核对时读取数据库和已发布记忆，失败候选不留正文副本。
+
+`memory_published` 表示发布成功；`memory_tool_rejected` 是返回模型修复的校验失败；`memory_model_call_timeout` 是单次调用超过时限，`network_timeout` 是 SDK 网络操作超时。`CURRENT` 出现才表示已有成功发布的版本，创建记忆目录本身不代表加工完成。终端仍显示简短失败提示，完整事件以日志文件为准。配置解析或日志目录无法打开等发生在日志初始化之前的错误需查看启动终端。
+
 ### 容量与超时
 
 | 范围 | 限制 |
 | --- | --- |
 | 一次 agent turn | 最多 12 次模型调用；主/子执行时限分别为 300/600 秒 |
-| 主对话容量等待 | 每轮累计最多 370 秒，与执行时限分开 |
-| 记忆加工 | 每批目标 16000 字节，每次最多 16 次模型调用、180 秒，最多尝试 2 次 |
-| 加工触发 | 有积压时按 memory_interval_seconds 定时；达到 memory_threshold_bytes 提前触发；失败后至少间隔 60 秒后台重试 |
+| 主对话容量等待 | 每轮累计最多 memory_wait_timeout_seconds，与执行时限分开；等待结束或前台话语被替换不会取消后台加工 |
+| 记忆加工 | 每批目标 16000 字节，每次尝试最多 16 次模型调用，最多尝试 2 次；每次模型调用独立受 memory_model_timeout_seconds 限制，整批无独立墙钟时限，超时不缩批 |
+| 加工触发 | 保护窗口外有积压时按 memory_interval_seconds 定时；这些内容达到 memory_threshold_bytes 提前触发；失败后至少间隔 60 秒后台重试 |
 | 页面容量 | 普通页最多 16000 字节，hot.md 和根 index.md 各最多 6000 字节，最多 1000 个 Markdown 文件 |
 | 原文读取 | 单次最多 20 条、24000 字节；每轮记忆读取累计最多 32000 字节 |
 | shell | 默认 60 秒时限，输出最多 64 KiB |
 
-context_token_budget 包含 messages 和 tools，使用序列化 JSON 的 UTF-8 字节数作保守估算，不是模型精确 token 数。配置时需为上游输出和协议开销留余量。近期已加工窗口可缩小，未加工的有效对话不会因预算不足而静默丢弃。
+记忆模型的 SDK 网络超时同步使用 memory_model_timeout_seconds，避免仍受默认 60 秒网络等待限制；单次调用的完整时限覆盖连接及整个流式响应，持续收到片段不会重置它。普通主/子 agent 的执行时限保持表中规则。
+
+context_token_budget 包含 messages 和 tools，使用序列化 JSON 的 UTF-8 字节数作保守估算，不是模型精确 token 数。配置时需为上游输出和协议开销留余量。保护窗口按消息条数定义，不自动按预算缩小；窗口本身、固定提示或工具结果过大时会报容量错误。窗口与加工范围的完整规则见 [容量与历史选择](HISTORY_MEMORY.md#容量与历史选择)。本地配置若显式设置过 memory_recent_messages，会覆盖默认值。
 
 ## 自动化测试
 
@@ -77,7 +95,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 | --- | --- |
 | `tests/test_agent_history.py`、`test_agent_tool_messages.py` | agent 归属、turn、事务、工具配对、稳定键与未知结果 |
 | `tests/test_agent_runtime.py`、`test_agent_result_timer.py` | 委派、补充、取消、后台执行、主动回流、暂缓与输入竞争 |
-| `tests/test_memory.py`、`test_memory_compiler.py` | 增量内存视图、固定批次、发布恢复、读取与容量等待；加工回执、读后修改、入链维护、拆分合并及来源约束 |
+| `tests/test_memory.py`、`test_memory_compiler.py`、`test_memory_window.py` | 增量内存视图、固定批次、发布恢复、读取与容量等待；近期保护窗口、工具配对、迟到返回、移出窗口后加工及重启去重；加工回执、读后修改、入链维护、拆分合并及来源约束 |
 | `tests/test_backend.py`、`test_backend_transport.py` | 连续输入、JSONL、流式通知、进程退出与重启 |
 | `tests/test_ark_model.py`、`test_config.py` | 模型流解析、错误分类、工具调用和配置校验 |
 | `tests/test_chat_ui.py` | QProcess 到气泡的离屏链路、迟到片段、阅读、隐藏与展开 |
@@ -103,7 +121,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python scripts/test_memory.py --live
 ```
 
-agent 冒烟在临时目录执行真实 shell 并检查文件产物、子执行状态、结果投递和流式输出。记忆冒烟检查带来源的页面、磁盘重载、read_memory / read_raw 调用以及回答正确性。脚本输出通过/失败信息，不打印 API key 或完整模型请求。
+agent 冒烟在临时目录执行真实 shell 并检查文件产物、子执行状态、结果投递和流式输出。记忆冒烟检查带来源的页面、磁盘重载、read_memory / read_raw 调用以及回答正确性。记忆冒烟和维护评估在脚本内部关闭合成资料的近期保护，直接验证加工与召回，不代表生产触发阈值；生产窗口由确定性测试覆盖。脚本输出通过/失败信息，不打印 API key 或完整模型请求。
 
 ## 记忆维护评估
 
@@ -137,9 +155,11 @@ UI 冒烟打开测试人物窗口，在首段正文后追加输入，检查重�
 
 已有离屏回归覆盖文本唯一入口、流式展示、主子历史隔离、单调 turn、操作去重、结果恢复和记忆读写闭环。真实 backend 子进程、Qt 离屏集成和临时数据库重启均有测试入口。
 
-记忆回归专门覆盖事务回滚不污染内存、晚完成消息不遗漏、固定批次期间继续输入、前台取消不取消共享加工、后台加工不占业务槽、只恢复最新有效轮次，以及指针切换前后失败时的版本一致性。纠正与停用验证指定来源不从旧快照、工具返回或后续加工中复活，原文仍保留。
+记忆回归专门覆盖事务回滚不污染内存、晚完成消息不遗漏、固定批次期间继续输入、逐次模型调用独立计时、连续流式片段不重置单次时限、超时重试保持完整批次且原文不丢失、前台取消不取消共享加工、后台加工不占业务槽、只恢复最新有效轮次，以及指针切换前后失败时的版本一致性。纠正与停用验证指定来源不从旧快照、工具返回或后续加工中复活，原文仍保留。日志回归覆盖真实 backend 子进程无需终端重定向即可落盘、追加与轮转、请求时序关联和诊断不泄露正文或凭据。
 
-已有真实模型样本通过委派与并行接话、无后续输入的主动结果报告，以及文件记忆加工、重载、查页、原文核对和流式回答。这些是链路冒烟，不能据此推断复杂场景质量：
+已有真实模型样本通过委派与并行接话、无后续输入的主动结果报告，以及文件记忆加工、重载、查页、原文核对和流式回答。这些是链路冒烟，不能据此推断复杂场景质量。
+
+近期保护窗口、逐次记忆模型调用超时和持久诊断日志的组合目前通过确定性回归及模拟模型的真实 backend/Qt 离屏链路验证，尚未以这组配置重新执行真实模型冒烟。已有真实模型结果不代表新保护窗口下的长期记忆质量。
 
 | 尚需专门验证的范围 | 现有证据的边界 |
 | --- | --- |

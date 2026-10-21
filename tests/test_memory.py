@@ -59,7 +59,8 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.store = HistoryStore(self.root / 'chat.sqlite3')
         self.memory = MemoryStore(self.store)
         self.model = CompilingModel()
-        self.compiler = MemoryCompiler(self.store, self.memory, self.model, interval=1000)
+        # Publication protocol fixtures deliberately make all raw dialogue eligible.
+        self.compiler = MemoryCompiler(self.store, self.memory, self.model, interval=1000, recent_messages=0)
         self.context = HistoryContextProvider(self.store, 'persona', self.memory, recent_messages=2)
         self.loop = AgentLoop(self.context, self.model, compiler=self.compiler)
         self.runtime = AgentRuntime(self.store, self.context, self.loop, LocalTools(self.root, False), 'test')
@@ -241,6 +242,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.model.batches), 2, 'Stale candidate must be regenerated against the correction')
 
     async def test_complete_context_budget_and_no_mutation_on_build(self):
+        self.dialogue('较早的对话')
         self.dialogue()
         before = dict(self.runtime.observed_results)
         full = self.context.build(1)
@@ -362,6 +364,7 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get_agent(1)['turn'], 1)
 
     async def test_memory_wait_is_separate_from_active_model_deadline(self):
+        self.context.recent_messages = 1
         for _ in range(3):
             self.dialogue('待整理的对话' * 500)
         self.loop.token_budget = 20000
@@ -375,6 +378,21 @@ class MemoryTests(unittest.IsolatedAsyncioTestCase):
         self.model.release.set()
         await asyncio.wait_for(current.task, 5)
         self.assertEqual(self.store.message(current.message_id)['status'], 'completed')
+
+    async def test_foreground_wait_timeout_does_not_cancel_background_memory(self):
+        for _ in range(3):
+            self.dialogue('待整理的对话' * 500)
+        self.loop.token_budget = 20000
+        self.loop.memory_wait_timeout = .03
+        self.model.release = asyncio.Event()
+        await self.service.handle({'method': 'chat/send', 'params': {'text': '继续说'}})
+        current = self.service.active
+        await asyncio.wait_for(current.task, 2)
+        self.assertEqual(self.store.message(current.message_id)['error_code'], 'memory_timeout')
+        self.assertFalse(self.compiler.task.done())
+        self.model.release.set()
+        await asyncio.wait_for(self.compiler.task, 5)
+        self.assertTrue(self.memory.snapshot().version)
 
     async def test_context_rejection_retries_model_without_repeating_tool(self):
         requests = []

@@ -5,5 +5,8 @@
   "thinking": "disabled",
   "bubble_seconds": 30,
   "workspace": ".",
-  "shell_enabled": false
+  "shell_enabled": false,
+  "memory_recent_messages": 50,
+  "memory_model_timeout_seconds": 300,
+  "memory_wait_timeout_seconds": 1800
 }

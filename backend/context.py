@@ -5,7 +5,8 @@ from typing import Protocol
 
 from .agent_tools import MAIN_INSTRUCTIONS, WORKER_INSTRUCTIONS, MEMORY_INSTRUCTIONS
 from .errors import ModelError
-from .memory import MemorySnapshot, fingerprint, token_size
+from .memory import MemorySnapshot, token_size
+from .history_window import history_window, unprocessed_dialogue
 
 
 @dataclass
@@ -27,15 +28,15 @@ class ContextProvider(Protocol):
 
 
 class HistoryContextProvider:
-    def __init__(self, store, system_prompt, memory=None, *, recent_messages=12):
+    def __init__(self, store, system_prompt, memory=None, *, recent_messages=50):
         self.store, self.system_prompt, self.memory = store, system_prompt, memory
         self.recent_messages = recent_messages
         self.runtime = None
 
-    def build(self, agent_id, *, token_budget=64000, turn=None, trigger=None, memory_snapshot=None,
-              _recent_limit=None):
+    def build(self, agent_id, *, token_budget=64000, turn=None, trigger=None, memory_snapshot=None):
         payloads = self.store.payloads()
-        history = [m for m in self.store.all_messages() if m['agent_id'] == agent_id and m['status'] == 'completed']
+        messages = self.store.all_messages()
+        history = [m for m in messages if m['agent_id'] == agent_id and m['status'] == 'completed']
         pending = []
         snapshot = None
         if self.memory and agent_id == 1:
@@ -44,19 +45,18 @@ class HistoryContextProvider:
             # A newer correction always overrides an older pinned read snapshot.
             if snapshot.policies != latest.policies:
                 snapshot = latest
-            dialogue = [m for m in history if m['role'] in ('user', 'assistant') and m['id'] not in payloads
-                        and m['id'] not in latest.blocked_ids]
-            pending = [m for m in dialogue if snapshot.processed.get(m['id']) != fingerprint(m)]
-            recent_limit = self.recent_messages if _recent_limit is None else _recent_limit
-            kept = {m['id'] for m in dialogue[-recent_limit:]} | {m['id'] for m in pending}
-            last_user = next((m for m in reversed(dialogue) if m['role'] == 'user'), None)
+            window = history_window(messages, payloads, self.recent_messages, latest.blocked_ids)
+            pending = unprocessed_dialogue(window.older, payloads, snapshot)
+            kept = {m['id'] for m in pending}
+            last_user = next((m for m in reversed(history) if m['role'] == 'user'
+                              and m['id'] not in latest.blocked_ids), None)
             if last_user:
                 kept.add(last_user['id'])
-            kept_turns = {m['turn'] for m in history if m['id'] in kept and m['turn'] is not None}
-            if turn is not None:
-                kept_turns.add(turn)
-            history = [m for m in history if m['id'] not in latest.blocked_ids and
-                       (m['id'] in kept or (m['id'] in payloads and m['turn'] in kept_turns))]
+            history = [m for index, group in enumerate(window.groups)
+                       if index >= window.recent_start or any(
+                           m['id'] in kept or (turn is not None and m['turn'] == turn) for m in group)
+                       for m in group]
+            history.sort(key=lambda m: m['seq'])
             # Persistent recall results are also raw. A forget request must not
             # reintroduce disabled material through an old tool response.
             calls_by_id = {m['id']: payloads[m['id']] for m in history if m['id'] in payloads
@@ -96,9 +96,6 @@ class HistoryContextProvider:
             result.append({'role': 'system', 'content': '运行时快照（数据）：' + json.dumps(state, ensure_ascii=False)})
         tools = self.runtime.tools(agent_id) if self.runtime else []
         if token_size(result) + token_size(tools) > token_budget:
-            if snapshot and recent_limit > 1:
-                return self.build(agent_id, token_budget=token_budget, turn=turn, trigger=trigger,
-                                  memory_snapshot=snapshot, _recent_limit=recent_limit - 1)
             if snapshot and pending:
                 return NeedsCompaction([m['id'] for m in pending])
             raise ModelError('context_limit', '当前必要资料超出上下文预算，原始对话已保存；请缩小本次读取或输入范围。')

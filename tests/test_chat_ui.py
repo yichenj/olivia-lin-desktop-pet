@@ -1,5 +1,6 @@
 """Real QProcess + backend + SQLite + Qt bubble, with a deterministic model."""
 import os
+import json
 from pathlib import Path
 import tempfile
 import time
@@ -107,6 +108,11 @@ class ChatUITests(unittest.TestCase):
         self.send("恢复了")
         self.until(lambda: not self.client.streaming and not self.client.pending)
         self.assertIn("恢复了", self.pet.bubble.content)
+        log = Path(self.directory.name) / 'test.sqlite3.logs' / 'backend.log'
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(sum(r['event'] == 'backend_started' for r in records), 2)
+        self.assertEqual(sum(r['event'] == 'backend_ready' for r in records), 2)
+        self.assertNotIn('恢复了', log.read_text())
 
     def test_failure_then_new_input_and_rapid_messages(self):
         self.send("[test:error]")

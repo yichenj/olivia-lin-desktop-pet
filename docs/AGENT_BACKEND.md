@@ -67,7 +67,7 @@ flowchart LR
 
 HistoryStore 在启动恢复后加载原始消息，事务提交时增量更新内存视图。MemoryStore 加载已发布的记忆版本，ContextProvider 从这两个 Store 读取资料，不维护另一份需要调用方刷新的历史缓存。
 
-MemoryCompiler 在有待处理主对话时安排异步加工。正常加工与聊天、业务执行独立进行；上下文放不下未加工内容时，AgentLoop 才等待加工再重建。MemoryStore 完整发布文件后切换内存快照，主 agent 可以通过 read_memory 和 read_raw 进一步查阅。
+MemoryCompiler 在近期保护窗口外有待处理主对话时安排异步加工。正常加工与聊天、业务执行独立进行；上下文放不下且有可加工的旧对话时，AgentLoop 才等待加工再重建。近期窗口与完整工具片段的选择规则见 [历史与记忆](HISTORY_MEMORY.md#容量与历史选择)。MemoryStore 完整发布文件后切换内存快照，主 agent 可以通过 read_memory 和 read_raw 进一步查阅。
 
 原始历史、记忆页面、加工状态的归属和事务边界统一定义在 [历史与记忆](HISTORY_MEMORY.md)。
 

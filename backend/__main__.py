@@ -12,6 +12,7 @@ from .runtime import AgentRuntime
 from .local_tools import LocalTools
 from .memory import MemoryStore
 from .memory_worker import MemoryCompiler
+from .diagnostics import configure_logging, close_logging, event, error_code
 
 
 def emit(message):
@@ -21,6 +22,22 @@ def emit(message):
 
 async def serve():
     config = load_config()
+    configure_logging(config.database)
+    event('backend_started', memory_model_timeout_seconds=config.memory_model_timeout_seconds,
+          memory_wait_timeout_seconds=config.memory_wait_timeout_seconds,
+          memory_recent_messages=config.memory_recent_messages,
+          context_token_budget=config.context_token_budget)
+    try:
+        await run_service(config)
+    except Exception as error:
+        event('backend_failed', reason=error_code(error))
+        raise
+    finally:
+        event('backend_stopped')
+        close_logging()
+
+
+async def run_service(config):
     if config.provider not in ("ark", "mock"):
         raise ValueError("unknown_provider")
     prompt = config.prompt.read_text(encoding="utf-8")
@@ -32,8 +49,11 @@ async def serve():
         memory = MemoryStore(store)
         context = HistoryContextProvider(store, prompt, memory, recent_messages=config.memory_recent_messages)
         compiler = MemoryCompiler(store, memory, model, interval=config.memory_interval_seconds,
-                                  threshold=config.memory_threshold_bytes, input_budget=config.context_token_budget)
-        harness = AgentLoop(context, model, compiler=compiler, token_budget=config.context_token_budget)
+                                  threshold=config.memory_threshold_bytes, input_budget=config.context_token_budget,
+                                  timeout=config.memory_model_timeout_seconds,
+                                  recent_messages=config.memory_recent_messages)
+        harness = AgentLoop(context, model, compiler=compiler, token_budget=config.context_token_budget,
+                            memory_wait_timeout=config.memory_wait_timeout_seconds)
         AgentRuntime(store, context, harness, LocalTools(config.workspace, config.shell_enabled, secrets=(config.api_key,)), config.model)
         service = ChatService(store, context, harness, config.model, emit)
         store.on_change = compiler.schedule
@@ -42,6 +62,7 @@ async def serve():
         transport, _ = await asyncio.get_running_loop().connect_read_pipe(
             lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer)
         service.notify("backend/ready", {})
+        event('backend_ready')
         service.schedule_results()
         while line := await reader.readline():
             request = None
@@ -56,12 +77,14 @@ async def serve():
                     raise RpcError(-32600, "无效的 JSON-RPC 请求")
                 await service.handle(request)
             except RpcError as error:
+                event('rpc_rejected', code=error.code)
                 invalid = error.code in (-32700, -32600)
                 if invalid or "id" in request:
                     request_id = request.get("id") if isinstance(request, dict) and not invalid else None
                     emit({"jsonrpc": "2.0", "id": request_id,
                           "error": {"code": error.code, "message": str(error)}})
             except Exception as error:
+                event('rpc_failed', reason=error_code(error))
                 print(f"Request failed: {type(error).__name__}", file=sys.stderr, flush=True)
                 if isinstance(request, dict) and "id" in request:
                     emit({"jsonrpc": "2.0", "id": request["id"],

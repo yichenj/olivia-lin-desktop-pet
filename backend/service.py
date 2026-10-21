@@ -6,6 +6,7 @@ import time
 
 from .harness import ModelError
 from .storage import MAIN_AGENT_ID
+from .diagnostics import event, error_code
 
 
 class RpcError(Exception):
@@ -136,6 +137,7 @@ class ChatService:
         except ModelError as error:
             self.finish(current, "failed", error.code, str(error))
         except Exception as error:
+            event('chat_reply_error', agent_id=current.agent_id, turn=current.number, reason=error_code(error))
             print(f"Turn failed: {type(error).__name__}", file=sys.stderr, flush=True)
             self.finish(current, "failed", "internal_error", "回复过程中发生错误，请重试。")
 
@@ -174,6 +176,8 @@ class ChatService:
             committed = self.store.finish(current.agent_id, current.number, current.message_id, current.text, status, code, current.usage)
         if not committed:
             return
+        event('chat_reply_finished', agent_id=current.agent_id, turn=current.number,
+              status=status, error_code=code, output_chars=len(current.text))
         self.harness.schedule_memory()
         self.active = None
         params = {**current.display_identity(), "status": status, "text": current.text}
